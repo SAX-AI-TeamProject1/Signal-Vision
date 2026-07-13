@@ -17,6 +17,18 @@ def main() -> int:
         banner(False, "패키지 설치 실패")
         return 1
 
+    # pip이 성공을 보고해도 실제 import가 되는지는 별개 문제이므로 설치 직후 바로 검증한다
+    # (동시에 다른 프로세스가 같은 .venv를 건드리는 경우 등, pip 종료 코드만으로는 못 잡는 문제 대비).
+    step("설치된 패키지 import 확인 중")
+    check = subprocess.run(
+        [sys.executable, "-c", "import cv2, mediapipe, numpy"],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode != 0:
+        banner(False, f"설치는 됐지만 import 실패 - .venv가 깨졌을 수 있음:\n{check.stderr}")
+        return 1
+
     banner(True, "패키지 설치 완료")
     return 0
 
