@@ -84,22 +84,19 @@
             "osx": {
                 "command": "${workspaceFolder}/.venv/bin/python",
                 "args": [
-                    "-c",
-                    "import cv2, mediapipe, numpy; print('OK | cv2', cv2.__version__, '| mediapipe', mediapipe.__version__, '| numpy', numpy.__version__)"
+                    "scripts/check_env.py"
                 ]
             },
             "linux": {
                 "command": "${workspaceFolder}/.venv/bin/python",
                 "args": [
-                    "-c",
-                    "import cv2, mediapipe, numpy; print('OK | cv2', cv2.__version__, '| mediapipe', mediapipe.__version__, '| numpy', numpy.__version__)"
+                    "scripts/check_env.py"
                 ]
             },
             "windows": {
                 "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
                 "args": [
-                    "-c",
-                    "import cv2, mediapipe, numpy; print('OK | cv2', cv2.__version__, '| mediapipe', mediapipe.__version__, '| numpy', numpy.__version__)"
+                    "scripts/check_env.py"
                 ]
             },
             "options": {
