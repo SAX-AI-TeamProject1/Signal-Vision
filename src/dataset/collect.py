@@ -43,7 +43,7 @@ from src.capture.extractor import (
 )
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "asset"
-MIN_DETECTED_RATIO = 0.5  # 손 감지 프레임이 이 비율 미만이면 SKIP (import_jester.py도 이 기준을 그대로 가져다 씀)
+MIN_DETECTED_RATIO = 0.5  # 손 감지 프레임이 이 비율 미만이면 SKIP
 
 WINDOW = "Collect"
 BTN_W, BTN_H, BTN_MARGIN = 150, 50, 10  # 버튼 하나의 가로/세로 크기와 버튼 사이 여백(픽셀)

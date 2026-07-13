@@ -56,7 +56,7 @@ mocap-sample/
 ├── models/                 # MediaPipe 모델(.task) + 학습된 분류 모델(sign_classifier.pt)
 └── src/
     ├── capture/            # 카메라 캡처 + 특징 추출기(extractor.py) + 시각화
-    ├── dataset/            # 데이터 수집(collect.py), Jester 변환(import_jester.py)
+    ├── dataset/            # 데이터 수집(collect.py)
     └── training/ inference/ # 학습(train.py) / 실시간 추론(predict.py) + 전달(publisher.py)
 ```
 
@@ -92,10 +92,8 @@ mocap-sample/
   | back (미수집) | 손등으로 밀어내기 | 후진 |
   | left_go / right_go | 좌/우로 팔 젓기 | 선회 |
   | idle | 평상시 동작 (`--idle`로 수집, 필수 — 오작동 방지) | 직전 상태 유지 |
-- **학습 데이터는 자체 수집 단독** — Jester(14.8만 클립) 실험으로 외부 데이터의 도메인 갭
-  (동작 방식 차이, 셀피 뷰 좌우 반전)을 실측 확인하고 자체 수집으로 전환했다.
-  외부 데이터셋(NATOPS 등)은 추후 다중 사용자 일반화 단계에서 사전학습 용도로만 검토.
-  (Jester 변환 파이프라인 `import_jester.py`는 도구로 유지)
+- **학습 데이터는 자체 수집 단독** — 외부 데이터셋(NATOPS 등)은 추후 다중 사용자 일반화
+  단계에서 사전학습 용도로만 검토.
 - **안전 규칙 (계층별)**
   - 추론: 신뢰도 임계값 미만 or 미학습 동작 → "unknown" / 사람(포즈) 미감지 → 모델 판단 무시하고 "unknown"
   - 기계(Mocap-Sim): unknown → 정지 / 하트비트 2초 끊김 → 무조건 정지 / idle → 직전 상태 유지

@@ -3,7 +3,7 @@
 
 """공용 특징 추출기: 양손 랜드마크 + 상체 포즈 → 고정 크기 벡터.
 
-수집(collect)·변환(import_jester)·추론(predict)이 모두 이 모듈을 사용해
+수집(collect)·추론(predict)이 모두 이 모듈을 사용해
 학습-추론 특징 형식을 일치시킨다. 손 모델 다운로드/랜드마커 생성/그리기/카메라 열기 같은
 공용 헬퍼도 여기 함께 두어, landmark_viewer.py(검증용 뷰어)와 dataset/collect.py(수집 UI)가
 이 모듈에서 가져다 쓴다 (다른 스크립트들이 core를 참조하는 방향 — 반대로 core가 그것들에
@@ -137,7 +137,7 @@ def draw_skeleton(
         cv2.circle(frame, pt, point_radius, point_color, -1)
 
 
-# 수집(collect)·변환(import_jester)·추론(predict)이 공통으로 쓰는 진입점.
+# 수집(collect)·추론(predict)이 공통으로 쓰는 진입점.
 # HandLandmarker + PoseLandmarker를 한 번에 들고 있다가, 프레임을 넣으면
 # 두 모델 검출 결과를 위 FEATURE_DIM 포맷의 벡터로 변환해준다.
 class FeatureExtractor:

@@ -7,7 +7,7 @@
 ### 1-1. 주 데이터: 자체 수집 (확정)
 
 수신호는 프로젝트마다 정의가 달라 표준 데이터셋이 없다. 배포 환경(사용자 웹캠, 정면 시점)과
-동일한 조건에서 수집하는 자체 데이터가 소규모여도 가장 효과적이다 — Jester 실험(아래)으로 실증됨.
+동일한 조건에서 수집하는 자체 데이터가 소규모여도 가장 효과적이다.
 
 - 도구: `src/dataset/collect.py` (자동 연속 수집, 품질 필터, 손 이탈 경고 내장)
 - 형식: `asset/<라벨>/<타임스탬프>.npy`, shape (30, 150) — 30프레임 × (양손 126 + 상체 포즈 24)
@@ -15,25 +15,10 @@
   idle은 1.5~2배 (손 보이는/안 보이는 변형 모두 포함)
 - **idle 클래스 필수** — 평상시 동작을 신호로 오인하는 것을 막는 클래스
 
-### 1-2. 외부 데이터셋 조사와 Jester 실험 결과
+### 1-2. 외부 데이터셋
 
-조사했던 후보들 (연구 기록):
-
-| 데이터셋 | 내용 | 다운로드 | 평가 |
-|---|---|---|---|
-| Jester | 웹캠 3인칭 동적 제스처 14.8만 클립, 27클래스 | [Qualcomm](https://www.qualcomm.com/developer/software/jester-dataset/downloads), [Kaggle 미러](https://www.kaggle.com/toxicmender/20bn-jester) | **실험 완료 — 아래 참고** |
-| HaGRIDv2 | 손 제스처 이미지 100만 장, 제어용 제스처 포함 | [GitHub](https://github.com/hukenovs/hagrid) | 이미지 중심, 미사용 |
-| SHREC'21 | 손 스켈레톤 시퀀스 180개 | [벤치마크](https://univr-vips.github.io/Shrec21/) | 형식 유사, 모델 벤치마크 참고용 |
-| IPN Hand | 연속 제스처 4천 샘플 | [공식](https://gibranbenitez.github.io/IPN_Hand/) | 추론 설계 참고용 |
-| NATOPS 등 유도신호 계열 | 항공 마샬링 24종 등 | (연구용 신청) | 다중 사용자 일반화 단계에서 사전학습 후보 |
-| AI Hub 수어/Ego-Vision | 한국수어 53.6만 클립 등 | [AI Hub](https://aihub.or.kr) (본인인증) | 어휘/시점 불일치로 제외 |
-
-**Jester 실험 결론 (중요 교훈)**: `import_jester.py`로 4~5클래스 × 150개를 변환해 학습,
-Jester 내부 test에서는 88~91%가 나왔지만 **실제 웹캠에서는 예측이 크게 빗나갔다.**
-원인 = 도메인 갭 (동작 수행 방식·속도 차이) + 셀피 뷰 좌우 반전 (Jester는 비반전 영상이라
-좌/우 신호가 반대로 학습됨). → **자체 수집 단독으로 전환.** 자체 데이터는 수집·추론이 같은
-파이프라인을 통과하므로 두 문제가 구조적으로 없다. 외부 데이터는 라이선스 확인 후
-사전학습 용도로만, 원본은 저장소에 커밋 금지.
+외부 데이터셋(NATOPS 등)은 주 데이터로 쓰지 않고, 다중 사용자 일반화 단계에서
+사전학습 용도로만 검토한다. 라이선스 확인 후에만 사용하고, 원본은 저장소에 커밋 금지.
 
 ## 2. 데이터 표현과 전처리
 
@@ -105,8 +90,7 @@ UI: 확정 신호 + 클래스별 확률 막대 패널 + 임계값선 + 손 이�
 
 - [x] 1. 랜드마크 추출 검증 (`src/capture/landmark_viewer.py`) — 30 FPS 실측
 - [x] 2. 데이터 수집 도구 (`src/dataset/collect.py`)
-- [x] 3. 데이터 확보 — 자체 수집 6클래스 × 30개 (stop/slow/come/left_go/right_go/idle).
-      Jester 변환 실험은 도메인 갭 확인 후 폐기 (1-2절 교훈 참고)
+- [x] 3. 데이터 확보 — 자체 수집 6클래스 × 30개 (stop/slow/come/left_go/right_go/idle)
 - [x] 4. 학습 (`src/training/train.py`) — 자체 데이터 test 77.8% (30개/클래스 기준)
 - [x] 5. 실시간 추론 (`src/inference/predict.py`) — 안정화 필터 + 안전 가드 + 확률 패널 UI
 - [x] 6. 결과 전달 (`src/inference/publisher.py`) — rosbridge/UDP
