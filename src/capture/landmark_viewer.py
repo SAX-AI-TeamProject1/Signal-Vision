@@ -48,21 +48,25 @@ from src.capture.extractor import (
     open_camera,
     to_mp_image,
 )
+from src.console import banner, step
 
 
 def main() -> None:
     """랜드마크 추출 → 시각화 루프 (학습/추론과 무관, 검증 전용)."""
+    step("카메라/모델 초기화 중 (최초 실행 시 모델 다운로드로 시간이 걸릴 수 있음)")
     hand_landmarker = create_hand_landmarker()
     pose_landmarker = create_pose_landmarker()
     cap = open_camera()
     start = time.monotonic()
     prev_time = start
     warning = HandWarning()
+    ok_exit = True
 
     while True:
         ok, frame = cap.read()
         if not ok:
             print("프레임을 읽지 못했습니다. 종료합니다.")
+            ok_exit = False
             break
 
         # 셀피 뷰로 좌우 반전 후 MediaPipe 입력용 이미지로 변환
@@ -108,7 +112,12 @@ def main() -> None:
     cv2.destroyAllWindows()
     hand_landmarker.close()
     pose_landmarker.close()
+    banner(ok_exit, "정상 종료" if ok_exit else "카메라 프레임 읽기 실패로 종료")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        banner(False, f"초기화/실행 중 오류 발생: {exc}")
+        raise
