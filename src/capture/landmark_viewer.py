@@ -13,7 +13,10 @@ doc/design.md 참고). 이 뷰어도 같은 두 랜드마커를 그대로 써서
 
 [사용 라이브러리와 이유]
 - OpenCV(cv2): 카메라 입력·프레임 표시/그리기. OS 간 웹캠 접근을 통일해 주는 사실상 표준 라이브러리.
-- MediaPipe Tasks API(HandLandmarker + PoseLandmarker): 손 21관절 + 상체 8관절(x, y, z) 랜드마크 추출.
+- MediaPipe: 구글이 만든, 이미지/영상에서 사람의 손·몸·얼굴 등을 인식하는 미리 학습된(pretrained)
+  ML 모델 + 실행 파이프라인 모음. "카메라 프레임 → 관절 좌표" 변환을 직접 딥러닝 모델을 만들어
+  학습시키지 않고도 라이브러리 호출 몇 줄로 끝낼 수 있게 해준다. Tasks API(HandLandmarker +
+  PoseLandmarker)를 써서 손 21관절 + 상체 8관절(x, y, z) 랜드마크를 추출한다.
   mediapipe 0.10.35부터 구형 solutions API가 제거되어 Tasks API만 지원한다.
   최초 실행 시 모델 파일(hand_landmarker.task·pose_landmarker.task)을 models/ 폴더에 자동 다운로드한다.
   모델 경로/다운로드/랜드마커 생성/그리기 헬퍼는 src/capture/extractor.py에 공용으로 정의되어
