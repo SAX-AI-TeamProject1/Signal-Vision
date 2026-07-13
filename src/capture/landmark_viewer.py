@@ -1,19 +1,33 @@
 # Last updated: 2026-07-13
 
-"""웹캠 영상에서 MediaPipe HandLandmarker 랜드마크를 실시간 시각화하는 검증 스크립트.
-
-카메라 입력 → 손 랜드마크 추출이 정상 동작하는지 확인한다.
-mediapipe 0.10.35는 구형 solutions API가 제거되어 Tasks API(HandLandmarker)를 사용한다.
-최초 실행 시 모델 파일(hand_landmarker.task, 약 8MB)을 models/ 폴더에 자동 다운로드한다.
+"""[역할] 웹캠 영상에서 MediaPipe HandLandmarker(손) + PoseLandmarker(상체 포즈) 랜드마크를
+실시간으로 함께 그려 보여주는 검증용 스크립트. 카메라 → 손+포즈 랜드마크 추출 파이프라인이
+정상 동작하는지 눈으로 확인하는 용도이며, 그 자체로 학습이나 예측을 하지는 않는다.
 
 실행: F5 또는 VSCode 태스크 "실행: 랜드마크 시각화" (종료: q 또는 ESC)
 
-이 파일 자체는 학습/예측을 하지 않는 검증용 뷰어다. 모델 경로/다운로드/그리기 로직은
-src/capture/extractor.py에 공용으로 정의되어 있고(이 파일이 그걸 가져다 쓰는 방향),
-extractor.py는 데이터 수집(dataset/collect.py) → 학습(training/train.py) →
-실시간 추론(inference/predict.py)까지 동일한 형식으로 이어진다.
+[손 + 포즈를 같이 보는 이유] 실제 수신호 인식은 손(왼손 63 + 오른손 63) + 상체 포즈(24) =
+150차원 특징을 함께 쓴다(src/capture/extractor.py의 FeatureExtractor, 설계 근거는
+doc/design.md 참고). 이 뷰어도 같은 두 랜드마커를 그대로 써서, 실제 특징 추출이 보는 것과
+동일한 화면을 검증 단계에서 확인할 수 있게 한다.
 
-학습/예측 알고리즘: 30프레임 랜드마크 시퀀스를 PyTorch로 구현한 LSTM(2층, hidden 64) 시퀀스
+[사용 라이브러리와 이유]
+- OpenCV(cv2): 카메라 입력·프레임 표시/그리기. OS 간 웹캠 접근을 통일해 주는 사실상 표준 라이브러리.
+- MediaPipe Tasks API(HandLandmarker + PoseLandmarker): 손 21관절 + 상체 8관절(x, y, z) 랜드마크 추출.
+  mediapipe 0.10.35부터 구형 solutions API가 제거되어 Tasks API만 지원한다.
+  최초 실행 시 모델 파일(hand_landmarker.task·pose_landmarker.task)을 models/ 폴더에 자동 다운로드한다.
+  모델 경로/다운로드/랜드마커 생성/그리기 헬퍼는 src/capture/extractor.py에 공용으로 정의되어
+  있고, 이 파일은 거기서 가져다 쓴다 (뷰어가 core를 참조하는 방향).
+
+[처리 흐름]
+카메라 프레임(BGR) 캡처 → 좌우 반전(셀피 뷰) → RGB 변환 후 mp.Image로 래핑
+→ HandLandmarker.detect_for_video() / PoseLandmarker.detect_for_video()로 같은 프레임에서
+  손(최대 2개) 21관절 + 상체 8관절을 각각 검출
+→ 정규화 좌표(0~1)를 프레임 픽셀 크기로 환산해 손은 초록/빨강, 포즈는 하늘색/주황 뼈대로 그림
+→ 연속 미검출 시 경고 오버레이(HandWarning, 손 기준), 화면에 FPS 표시
+
+[전체 파이프라인의 학습/예측 알고리즘] 이 뷰어 자체는 분류를 하지 않지만, 참고로 전체
+파이프라인은 30프레임 랜드마크 시퀀스를 PyTorch로 구현한 LSTM(2층, hidden 64) 시퀀스
 분류 모델로 학습·추론한다 — 수신호는 정지 자세가 아니라 시간에 따른 궤적(동적 제스처)이라
 시계열을 다루는 RNN 계열을 선택했다 (근거: doc/ml-flow.md 3절, doc/design.md).
 """
@@ -26,6 +40,8 @@ import cv2 # OpenCV : 카메라 입력, 프레임 그리기/표시
 from src.capture.extractor import (
     HAND_CONNECTIONS,
     create_hand_landmarker,
+    create_pose_landmarker,
+    draw_pose,
     to_mp_image,
     draw_skeleton,
 )
@@ -98,7 +114,8 @@ def draw_landmarks(frame, hand_landmarks) -> None:
 
 def main() -> None:
     """랜드마크 추출 → 시각화 루프 (학습/추론과 무관, 검증 전용)."""
-    landmarker = create_hand_landmarker()
+    hand_landmarker = create_hand_landmarker()
+    pose_landmarker = create_pose_landmarker()
     cap = open_camera()
     start = time.monotonic()
     prev_time = start
@@ -118,20 +135,26 @@ def main() -> None:
         # time.monotonic()은 시스템 시계 변경의 영향을 받지 않는 경과 시간(초)이라
         # (현재 - 시작) * 1000으로 "영상 재생 기준 몇 ms 지났는지"를 얻는다.
         timestamp_ms = int((time.monotonic() - start) * 1000)
-        result = landmarker.detect_for_video(mp_image, timestamp_ms)
+        # extractor.FeatureExtractor.detect()와 동일하게, 같은 프레임·타임스탬프를 손/포즈
+        # 두 랜드마커에 각각 넣어 검출한다 (실제 특징 추출이 보는 것과 같은 화면을 확인하려는 목적).
+        hand_result = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
+        pose_result = pose_landmarker.detect_for_video(mp_image, timestamp_ms)
 
-        for hand in result.hand_landmarks:  # 검출된 손(최대 2개)마다 랜드마크 그리기
+        for hand in hand_result.hand_landmarks:  # 검출된 손(최대 2개)마다 랜드마크 그리기
             draw_landmarks(frame, hand)
-        warning.update(result)
+        draw_pose(frame, pose_result)  # 상체 포즈(어깨·팔꿈치·손목·골반) 그리기
+        warning.update(hand_result)
         warning.draw(frame)
 
         # FPS = 1초 ÷ 이번 프레임에 걸린 시간(초). 프레임 간 시간이 0이면(이론상 드묾) 나눗셈 대신 0으로 처리
         now = time.monotonic()
         fps = 1.0 / (now - prev_time) if now > prev_time else 0.0
         prev_time = now
+        pose_detected = bool(pose_result.pose_landmarks)
         cv2.putText(
             frame,
-            f"FPS: {fps:.1f}  hands: {len(result.hand_landmarks)}  (q/ESC: quit)",
+            f"FPS: {fps:.1f}  hands: {len(hand_result.hand_landmarks)}  "
+            f"pose: {'O' if pose_detected else 'X'}  (q/ESC: quit)",
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
@@ -139,7 +162,7 @@ def main() -> None:
             2,
         )
 
-        cv2.imshow("Hand Landmarks", frame)
+        cv2.imshow("Hand + Pose Landmarks", frame)
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):  # 27 = ESC
             break
@@ -147,7 +170,8 @@ def main() -> None:
     # 창/카메라/네이티브 리소스 정리 (생략 시 다음 실행에서 카메라 점유 문제 발생 가능)
     cap.release()
     cv2.destroyAllWindows()
-    landmarker.close()
+    hand_landmarker.close()
+    pose_landmarker.close()
 
 
 if __name__ == "__main__":
