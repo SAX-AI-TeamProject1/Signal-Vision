@@ -266,6 +266,35 @@
                 "panel": "dedicated"
             },
             "problemMatcher": []
+        },
+        {
+            "label": "날짜 헤더 자동 감시 (.py 저장 시)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/watch_py_saves.sh",
+            "args": [
+                "${workspaceFolder}"
+            ],
+            "isBackground": true,
+            "presentation": {
+                "reveal": "silent",
+                "panel": "dedicated",
+                "close": false
+            },
+            "problemMatcher": {
+                "owner": "custom",
+                "pattern": {
+                    "regexp": "^ERROR: (.*)$",
+                    "message": 1
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^Watching",
+                    "endsPattern": "^Watching"
+                }
+            },
+            "runOptions": {
+                "runOn": "folderOpen"
+            }
         }
     ],
     "inputs": [
