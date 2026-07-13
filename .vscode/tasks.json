@@ -19,13 +19,13 @@
             "label": "1. venv 생성 (.venv)",
             "type": "shell",
             "osx": {
-                "command": "[ -d .venv ] && echo '.venv 이미 존재 - 건너뜀' || python3.12 -m venv .venv"
+                "command": "if [ -d .venv ]; then echo '.venv 이미 존재 - 건너뜀'; else if ! command -v python3.12 >/dev/null 2>&1; then echo 'Python 3.12 미설치 - Homebrew로 설치 시도'; if command -v brew >/dev/null 2>&1; then brew install python@3.12; else echo '[ERROR] Homebrew가 없어 자동 설치 불가 - https://www.python.org/downloads/release/python-31210/ 에서 수동 설치 필요'; exit 1; fi; fi; python3.12 -m venv .venv; fi"
             },
             "linux": {
-                "command": "[ -d .venv ] && echo '.venv 이미 존재 - 건너뜀' || python3.12 -m venv .venv"
+                "command": "if [ -d .venv ]; then echo '.venv 이미 존재 - 건너뜀'; else if ! command -v python3.12 >/dev/null 2>&1; then echo '[ERROR] Python 3.12 미설치 - 배포판 패키지 관리자로 설치 필요 (예: apt install python3.12)'; exit 1; fi; python3.12 -m venv .venv; fi"
             },
             "windows": {
-                "command": "if (Test-Path .venv) { Write-Host '.venv 이미 존재 - 건너뜀' } else { py -3.12 -m venv .venv }"
+                "command": "if (Test-Path .venv) { Write-Host '.venv 이미 존재 - 건너뜀' } else { $has312 = $null -ne (py -0p 2>$null | Select-String '3\\.12'); if (-not $has312) { Write-Host 'Python 3.12 미설치 - winget으로 설치 시도'; winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements; } py -3.12 -m venv .venv }"
             },
             "options": {
                 "cwd": "${workspaceFolder}"

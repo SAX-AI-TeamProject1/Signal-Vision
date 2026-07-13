@@ -52,8 +52,8 @@ Run any module the same way manually, e.g. `.venv/bin/python -m src.training.tra
 
 `src/` is organized as pipeline stages, each stage a subpackage:
 
-- `src/capture/` — camera capture + MediaPipe landmark extraction: `extractor.py` (the shared feature extractor, plus shared model download/landmarker-creation/drawing helpers other capture-stage scripts import), `landmark_viewer.py` (visualization/verification tool, imports those helpers from `extractor.py`)
-- `src/dataset/` — data collection scripts (`collect.py` planned) and external-dataset conversion (`import_jester.py` planned; kept as a tool even though Jester is not used for training — see below)
+- `src/capture/` — camera capture + MediaPipe landmark extraction: `extractor.py` (the shared feature extractor — `FeatureExtractor`, `FEATURE_DIM`/`HAND_DIM` etc. — plus shared model download/landmarker-creation/drawing/camera-opening/`HandWarning` helpers every other capture/dataset script imports), `landmark_viewer.py` (visualization/verification tool built entirely from those shared helpers)
+- `src/dataset/` — `collect.py` (webcam + click-button UI to record labeled `(30, 150)` sequences into `asset/<label>/`) and `import_jester.py` (converts the external Jester dataset into the same `asset/` format; kept as a tool even though Jester is not used for training — see below). Both reuse `extractor.py`'s helpers and share `collect.py`'s `MIN_DETECTED_RATIO`/`hand_detected_ratio` quality filter rather than reimplementing it.
 - `src/training/` — LSTM training (`train.py`), augmentation (`augment.py`), robustness stress testing (`stress_test.py`) — all planned
 - `src/inference/` — real-time prediction (`predict.py`) and result publishing (`publisher.py`, rosbridge/UDP) — both planned
 - `asset/` — collected landmark samples, one folder per label (gitignored; not present in this checkout)
