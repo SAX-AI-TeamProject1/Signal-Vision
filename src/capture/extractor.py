@@ -4,9 +4,10 @@
 """공용 특징 추출기: 양손 랜드마크 + 상체 포즈 → 고정 크기 벡터.
 
 수집(collect)·변환(import_jester)·추론(predict)이 모두 이 모듈을 사용해
-학습-추론 특징 형식을 일치시킨다. 손 모델 다운로드/랜드마커 생성/그리기 같은
-공용 헬퍼도 여기 함께 두어, landmark_viewer.py(검증용 뷰어)가 이 모듈에서 가져다 쓴다
-(뷰어가 core를 참조하는 방향 — 반대로 core가 뷰어에 의존하지 않는다).
+학습-추론 특징 형식을 일치시킨다. 손 모델 다운로드/랜드마커 생성/그리기/카메라 열기 같은
+공용 헬퍼도 여기 함께 두어, landmark_viewer.py(검증용 뷰어)와 dataset/collect.py(수집 UI)가
+이 모듈에서 가져다 쓴다 (다른 스크립트들이 core를 참조하는 방향 — 반대로 core가 그것들에
+의존하지 않는다).
 
 특징 벡터 (FEATURE_DIM = 150):
     [왼손 21관절 × xyz = 63] [오른손 63] [상체 8관절 × xyz = 24]
@@ -24,6 +25,8 @@ PyTorch로 구현한 LSTM(2층, hidden 64) 시퀀스 분류 모델로 학습·�
 """
 
 
+import platform # OS(Windows/macOS/Linux) 판별 — 카메라 백엔드를 OS별로 분기하기 위함
+import time # 손 이탈 경고 깜빡임 주기 계산
 import urllib.request # 최초 실행 시 모델(.task) 파일을 구글 저장소에서 내려받기 위함
 from pathlib import Path # OS 무관 경로 처리 (Windows/macOS 공용, design.md 규약)
 
@@ -177,7 +180,8 @@ class FeatureExtractor:
         self.pose.close()
 
 
-# 학습/추론 로직과는 무관한 디버그용 시각화 도우미 (landmark_viewer 등에서 호출).
+# 학습/추론 로직과는 무관한 디버그·수집용 시각화/카메라 도우미.
+# landmark_viewer.py(검증 뷰어)와 dataset/collect.py(수집 UI)가 공용으로 가져다 쓴다.
 def draw_pose(frame, pose_result) -> None:
     """상체 관절(팔·어깨·골반)을 프레임 위에 그린다."""
     if not pose_result.pose_landmarks:  # 사람이 검출 안 되면 그릴 것이 없으므로 그대로 반환
@@ -187,3 +191,76 @@ def draw_pose(frame, pose_result) -> None:
     # MediaPipe 좌표는 0~1 정규화 값이므로, 가로/세로 픽셀 크기(w, h)를 곱해 화면 좌표로 환산한다.
     pts = {j: (int(lms[j].x * w), int(lms[j].y * h)) for j in UPPER_BODY_JOINTS}
     draw_skeleton(frame, pts, ARM_CONNECTIONS, (255, 200, 0), (255, 100, 0), point_radius=5)
+
+
+def draw_landmarks(frame, hand_landmarks) -> None:
+    """정규화 좌표(0~1)의 손 랜드마크를 프레임 위에 그린다."""
+    h, w = frame.shape[:2]
+    # MediaPipe 좌표는 0~1 정규화 값이므로, 가로/세로 픽셀 크기(w, h)를 곱해 화면 좌표로 환산한다.
+    # 21개 관절을 순서(0~20)대로 딕셔너리에 담아 HAND_CONNECTIONS의 인덱스와 맞춘다.
+    points = {i: (int(lm.x * w), int(lm.y * h)) for i, lm in enumerate(hand_landmarks)}
+    draw_skeleton(frame, points, HAND_CONNECTIONS, (0, 255, 0), (0, 0, 255))
+
+
+def draw_detections(frame, hand_result, pose_result) -> None:
+    """검출된 손(최대 2개) + 상체 포즈를 한 프레임 위에 함께 그린다 (뷰어·수집이 공용으로 호출)."""
+    for hand in hand_result.hand_landmarks:
+        draw_landmarks(frame, hand)
+    draw_pose(frame, pose_result)
+
+
+def open_camera(index: int = 0) -> cv2.VideoCapture:
+    """OS별 백엔드로 웹캠을 연다."""
+    system = platform.system()
+    # design.md 규약: 카메라 백엔드는 OS별로만 분기하고, 그 외 경로/셸 로직은 플랫폼 무관하게 작성
+    if system == "Windows":
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+    elif system == "Darwin":  # macOS
+        cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
+    else:
+        cap = cv2.VideoCapture(index)
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"카메라 {index}번을 열 수 없습니다. "
+            "다른 앱이 카메라를 사용 중인지, OS 카메라 권한이 허용되어 있는지 확인하세요."
+        )
+    return cap
+
+
+# 손 이탈 경고: 연속 미감지가 이 프레임 수를 넘으면 화면을 빨갛게 깜빡인다
+WARN_AFTER_MISSES = 5
+
+
+# 학습 데이터 수집 중 손이 프레임 밖으로 나가면 그 구간은 0으로 채워진 저품질 샘플이 되므로,
+# 수집자가 바로 알아챌 수 있도록 화면에 강한 시각 경고를 준다.
+class HandWarning:
+    """손이 화면에서 사라지면 빨간 깜빡임 경고를 그린다. (시각화·수집·추론 공용)"""
+
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.misses = 0  # 연속 미검출 프레임 수
+
+    def update(self, hand_result) -> None:
+        # 이번 프레임에 손이 하나라도 잡히면 카운트 리셋, 아니면 누적
+        self.misses = 0 if hand_result.hand_landmarks else self.misses + 1
+
+    def draw(self, frame) -> None:
+        if not self.enabled or self.misses < WARN_AFTER_MISSES:  # 임계치 미만이면 그리지 않음
+            return
+        h, w = frame.shape[:2]
+        # 2Hz 깜빡임: 현재 시각(초)에 4를 곱해 반 주기(0.25초)마다 정수가 1씩 올라가게 만들고,
+        # 그 정수가 짝수/홀수인지(%2)로 on/off를 토글한다 → 1초에 2번 켜짐/꺼짐 반복
+        blink_on = int(time.monotonic() * 4) % 2 == 0
+        if blink_on:
+            # 반투명 빨간 오버레이로 화면 전체를 덮어 깜빡이는 느낌을 준다
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 255), -1)
+            # addWeighted(A, alpha, B, beta, gamma): 결과 = A*alpha + B*beta + gamma
+            # 즉 빨간 오버레이 30% + 원본 프레임 70%를 섞어 "반투명하게 붉게 물든" 효과를 낸다
+            cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, frame)
+        cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), 16)  # 두꺼운 빨간 테두리
+        # 흰색 두꺼운 글씨 위에 빨간 얇은 글씨를 겹쳐 그려 어떤 배경에서도 잘 보이게 함
+        cv2.putText(frame, "!! HAND OUT OF FRAME !!", (w // 2 - 260, h // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 4)
+        cv2.putText(frame, "!! HAND OUT OF FRAME !!", (w // 2 - 260, h // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)

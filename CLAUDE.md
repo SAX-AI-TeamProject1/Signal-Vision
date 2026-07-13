@@ -18,7 +18,7 @@ Pipeline: camera → MediaPipe HandLandmarker + PoseLandmarker → 150-dim featu
 
 ## Current state
 
-This is an early-stage skeleton: `pyproject.toml`, `.vscode/`, docs, and `models/` (pretrained MediaPipe `.task` files + `sign_classifier.pt`) are in place. Under `src/`, only `src/capture/` has real code so far: `extractor.py` (the 150-dim feature extractor — also holds the shared model download/landmarker-creation/drawing helpers) and `landmark_viewer.py` (the visualization/verification script, which imports those shared helpers from `extractor.py`). Keep the dependency direction one-way — `landmark_viewer.py` (debug tool) depends on `extractor.py` (production path), never the reverse. The other modules described in the docs (`src/dataset/collect.py`, `src/training/train.py`, `src/inference/predict.py`, `src/inference/publisher.py`, `src/training/augment.py`, `src/training/stress_test.py`) are planned but not yet implemented. Expect to build these from the design in `doc/design.md` / `doc/ml-flow.md` rather than finding existing implementations.
+This is an early-stage project: `pyproject.toml`, `.vscode/`, docs, and `models/` (pretrained MediaPipe `.task` files + `sign_classifier.pt`) are in place. `src/capture/` and `src/dataset/` have real code; `src/training/` and `src/inference/` are still planned (`train.py`, `predict.py`, `publisher.py`, `augment.py`, `stress_test.py` don't exist yet — build them from `doc/design.md` / `doc/ml-flow.md` rather than expecting to find them). Keep the dependency direction one-way: `extractor.py` is the shared core (model download, landmarker creation, drawing, camera-opening helpers) that everything else — `landmark_viewer.py`, `dataset/collect.py`, `dataset/import_jester.py` — imports from; core never imports from a debug/dataset script.
 
 ## Setup and commands
 
@@ -39,10 +39,11 @@ In VSCode, `Cmd/Ctrl+Shift+B` runs the default build task ("프로젝트 셋업"
 No test suite or linter is configured yet.
 
 Other VSCode tasks (`.vscode/tasks.json`) worth knowing about, all run through `.venv`'s Python as `python -m <module>`:
-- `src.capture.landmark_viewer` — landmark extraction/visualization check
-- `src.dataset.collect --label <label>` — collect labeled training samples (prompts for a label)
-- `src.training.train` — train the LSTM classifier
-- `src.inference.predict` — real-time inference
+- `src.capture.landmark_viewer` — hand+pose landmark extraction/visualization check (no camera in Docker/headless — needs a real webcam)
+- `src.dataset.collect --label <label>` — collect labeled training samples (click-button UI; prompts for a label)
+- `src.dataset.import_jester` — convert the Jester dataset into `asset/` format (kept as a tool only; not used for actual training, see below)
+- `src.training.train` — train the LSTM classifier (not yet implemented)
+- `src.inference.predict` — real-time inference (not yet implemented)
 - a background task that watches `.py` saves and stamps a `# Last updated: YYYY-MM-DD` header via `scripts/update_date_header.py` / `scripts/watch_py_saves.sh` (requires `fswatch`)
 
 Run any module the same way manually, e.g. `.venv/bin/python -m src.training.train`.

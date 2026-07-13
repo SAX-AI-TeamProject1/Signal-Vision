@@ -85,21 +85,21 @@
                 "command": "${workspaceFolder}/.venv/bin/python",
                 "args": [
                     "-c",
-                    "import cv2, mediapipe, numpy; print(\"OK | cv2\", cv2.__version__, \"| mediapipe\", mediapipe.__version__, \"| numpy\", numpy.__version__)"
+                    "import cv2, mediapipe, numpy; print('OK | cv2', cv2.__version__, '| mediapipe', mediapipe.__version__, '| numpy', numpy.__version__)"
                 ]
             },
             "linux": {
                 "command": "${workspaceFolder}/.venv/bin/python",
                 "args": [
                     "-c",
-                    "import cv2, mediapipe, numpy; print(\"OK | cv2\", cv2.__version__, \"| mediapipe\", mediapipe.__version__, \"| numpy\", numpy.__version__)"
+                    "import cv2, mediapipe, numpy; print('OK | cv2', cv2.__version__, '| mediapipe', mediapipe.__version__, '| numpy', numpy.__version__)"
                 ]
             },
             "windows": {
                 "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
                 "args": [
                     "-c",
-                    "import cv2, mediapipe, numpy; print(\"OK | cv2\", cv2.__version__, \"| mediapipe\", mediapipe.__version__, \"| numpy\", numpy.__version__)"
+                    "import cv2, mediapipe, numpy; print('OK | cv2', cv2.__version__, '| mediapipe', mediapipe.__version__, '| numpy', numpy.__version__)"
                 ]
             },
             "options": {

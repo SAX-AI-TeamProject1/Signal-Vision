@@ -19,14 +19,15 @@ doc/design.md 참고). 이 뷰어도 같은 두 랜드마커를 그대로 써서
   PoseLandmarker)를 써서 손 21관절 + 상체 8관절(x, y, z) 랜드마크를 추출한다.
   mediapipe 0.10.35부터 구형 solutions API가 제거되어 Tasks API만 지원한다.
   최초 실행 시 모델 파일(hand_landmarker.task·pose_landmarker.task)을 models/ 폴더에 자동 다운로드한다.
-  모델 경로/다운로드/랜드마커 생성/그리기 헬퍼는 src/capture/extractor.py에 공용으로 정의되어
-  있고, 이 파일은 거기서 가져다 쓴다 (뷰어가 core를 참조하는 방향).
+  모델 경로/다운로드/랜드마커 생성/그리기/카메라 열기/손 이탈 경고 헬퍼는 src/capture/extractor.py에
+  공용으로 정의되어 있고, 이 파일은 거기서 가져다 쓴다 (뷰어가 core를 참조하는 방향 — dataset/collect.py도
+  같은 헬퍼를 가져다 쓴다).
 
 [처리 흐름]
 카메라 프레임(BGR) 캡처 → 좌우 반전(셀피 뷰) → RGB 변환 후 mp.Image로 래핑
 → HandLandmarker.detect_for_video() / PoseLandmarker.detect_for_video()로 같은 프레임에서
   손(최대 2개) 21관절 + 상체 8관절을 각각 검출
-→ 정규화 좌표(0~1)를 프레임 픽셀 크기로 환산해 손은 초록/빨강, 포즈는 하늘색/주황 뼈대로 그림
+→ extractor.draw_detections()로 손은 초록/빨강, 포즈는 하늘색/주황 뼈대로 그림
 → 연속 미검출 시 경고 오버레이(HandWarning, 손 기준), 화면에 FPS 표시
 
 [전체 파이프라인의 학습/예측 알고리즘] 이 뷰어 자체는 분류를 하지 않지만, 참고로 전체
@@ -35,84 +36,18 @@ doc/design.md 참고). 이 뷰어도 같은 두 랜드마커를 그대로 써서
 시계열을 다루는 RNN 계열을 선택했다 (근거: doc/ml-flow.md 3절, doc/design.md).
 """
 
-import platform # OS(Windows/macOS/Linux) 판별 — 카메라 백엔드를 OS별로 분기하기 위함
-import time # 프레임 타임스탬프(ms), FPS 계산, 경고 깜빡임 주기 계산
+import time # 프레임 타임스탬프(ms), FPS 계산
 
 import cv2 # OpenCV : 카메라 입력, 프레임 그리기/표시
 
 from src.capture.extractor import (
-    HAND_CONNECTIONS,
+    HandWarning,
     create_hand_landmarker,
     create_pose_landmarker,
-    draw_pose,
+    draw_detections,
+    open_camera,
     to_mp_image,
-    draw_skeleton,
 )
-
-# 손 이탈 경고: 연속 미감지가 이 프레임 수를 넘으면 화면을 빨갛게 깜빡인다
-WARN_AFTER_MISSES = 5
-
-
-# 학습 데이터 수집 중 손이 프레임 밖으로 나가면 그 구간은 0으로 채워진 저품질 샘플이 되므로,
-# 수집자가 바로 알아챌 수 있도록 화면에 강한 시각 경고를 준다.
-class HandWarning:
-    """손이 화면에서 사라지면 빨간 깜빡임 경고를 그린다. (시각화·수집·추론 공용)"""
-
-    def __init__(self, enabled: bool = True) -> None:
-        self.enabled = enabled
-        self.misses = 0  # 연속 미검출 프레임 수
-
-    def update(self, hand_result) -> None:
-        # 이번 프레임에 손이 하나라도 잡히면 카운트 리셋, 아니면 누적
-        self.misses = 0 if hand_result.hand_landmarks else self.misses + 1
-
-    def draw(self, frame) -> None:
-        if not self.enabled or self.misses < WARN_AFTER_MISSES:  # 임계치 미만이면 그리지 않음
-            return
-        h, w = frame.shape[:2]
-        # 2Hz 깜빡임: 현재 시각(초)에 4를 곱해 반 주기(0.25초)마다 정수가 1씩 올라가게 만들고,
-        # 그 정수가 짝수/홀수인지(%2)로 on/off를 토글한다 → 1초에 2번 켜짐/꺼짐 반복
-        blink_on = int(time.monotonic() * 4) % 2 == 0
-        if blink_on:
-            # 반투명 빨간 오버레이로 화면 전체를 덮어 깜빡이는 느낌을 준다
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 255), -1)
-            # addWeighted(A, alpha, B, beta, gamma): 결과 = A*alpha + B*beta + gamma
-            # 즉 빨간 오버레이 30% + 원본 프레임 70%를 섞어 "반투명하게 붉게 물든" 효과를 낸다
-            cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, frame)
-        cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), 16)  # 두꺼운 빨간 테두리
-        # 흰색 두꺼운 글씨 위에 빨간 얇은 글씨를 겹쳐 그려 어떤 배경에서도 잘 보이게 함
-        cv2.putText(frame, "!! HAND OUT OF FRAME !!", (w // 2 - 260, h // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 4)
-        cv2.putText(frame, "!! HAND OUT OF FRAME !!", (w // 2 - 260, h // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
-
-
-def open_camera(index: int = 0) -> cv2.VideoCapture:
-    """OS별 백엔드로 웹캠을 연다."""
-    system = platform.system()
-    # design.md 규약: 카메라 백엔드는 OS별로만 분기하고, 그 외 경로/셸 로직은 플랫폼 무관하게 작성
-    if system == "Windows":
-        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-    elif system == "Darwin":  # macOS
-        cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
-    else:
-        cap = cv2.VideoCapture(index)
-    if not cap.isOpened():
-        raise RuntimeError(
-            f"카메라 {index}번을 열 수 없습니다. "
-            "다른 앱이 카메라를 사용 중인지, OS 카메라 권한이 허용되어 있는지 확인하세요."
-        )
-    return cap
-
-
-def draw_landmarks(frame, hand_landmarks) -> None:
-    """정규화 좌표(0~1)의 랜드마크를 프레임 위에 그린다."""
-    h, w = frame.shape[:2]
-    # MediaPipe 좌표는 0~1 정규화 값이므로, 가로/세로 픽셀 크기(w, h)를 곱해 화면 좌표로 환산한다.
-    # 21개 관절을 순서(0~20)대로 딕셔너리에 담아 HAND_CONNECTIONS의 인덱스와 맞춘다.
-    points = {i: (int(lm.x * w), int(lm.y * h)) for i, lm in enumerate(hand_landmarks)}
-    draw_skeleton(frame, points, HAND_CONNECTIONS, (0, 255, 0), (0, 0, 255))
 
 
 def main() -> None:
@@ -143,9 +78,7 @@ def main() -> None:
         hand_result = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
         pose_result = pose_landmarker.detect_for_video(mp_image, timestamp_ms)
 
-        for hand in hand_result.hand_landmarks:  # 검출된 손(최대 2개)마다 랜드마크 그리기
-            draw_landmarks(frame, hand)
-        draw_pose(frame, pose_result)  # 상체 포즈(어깨·팔꿈치·손목·골반) 그리기
+        draw_detections(frame, hand_result, pose_result)  # 손 랜드마크 + 상체 포즈 뼈대 그리기
         warning.update(hand_result)
         warning.draw(frame)
 
