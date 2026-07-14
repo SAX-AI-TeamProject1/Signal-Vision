@@ -1,4 +1,4 @@
-# Last updated: 2026-07-13
+# Last updated: 2026-07-14
 """패키지 설치(pip install -e .) 실행 후 성공/실패를 명확한 배너로 출력."""
 
 import subprocess

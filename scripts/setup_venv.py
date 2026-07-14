@@ -1,4 +1,4 @@
-# Last updated: 2026-07-13
+# Last updated: 2026-07-14
 """venv 생성: Python 3.12 확인/설치 후 .venv 생성. 성공/실패를 명확한 배너로 출력."""
 
 from __future__ import annotations

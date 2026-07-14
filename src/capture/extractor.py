@@ -1,5 +1,4 @@
-# Last updated: 2026-07-13
-
+# Last updated: 2026-07-14
 
 """공용 특징 추출기: 양손 랜드마크 + 상체 포즈 → 고정 크기 벡터.
 
@@ -207,6 +206,21 @@ def draw_detections(frame, hand_result, pose_result) -> None:
     for hand in hand_result.hand_landmarks:
         draw_landmarks(frame, hand)
     draw_pose(frame, pose_result)
+
+
+def process_frame(cap: cv2.VideoCapture, extractor: "FeatureExtractor", t0: float):
+    """프레임 1장을 읽어 검출까지 수행한다 (수집·추론 공용). 반환: (frame, 손결과, 포즈결과) 또는 (None,)*3.
+
+    t0는 이 캡처 세션의 시작 시각(time.monotonic() 기준) — VIDEO 모드가 요구하는 단조 증가
+    타임스탬프를 만들기 위한 기준점이다.
+    """
+    ok, frame = cap.read()
+    if not ok:
+        return None, None, None
+    frame = cv2.flip(frame, 1)  # 셀피 뷰
+    timestamp_ms = int((time.monotonic() - t0) * 1000)
+    hand_result, pose_result = extractor.detect(frame, timestamp_ms)
+    return frame, hand_result, pose_result
 
 
 def open_camera(index: int = 0) -> cv2.VideoCapture:

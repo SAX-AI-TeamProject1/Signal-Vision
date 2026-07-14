@@ -1,4 +1,4 @@
-# Last updated: 2026-07-13
+# Last updated: 2026-07-14
 
 """[역할] 수신호 랜드마크 시퀀스를 라벨별로 모아 학습 데이터(asset/)로 저장하는 수집 스크립트
 (자동 연속 수집 + 화면 클릭 버튼 UI). 카메라 앞에서 같은 동작을 여러 번 반복하면, 시퀀스
@@ -7,7 +7,6 @@
 특징 형식은 여기서 만들지 않고 `src/capture/extractor.py`를 그대로 가져다 쓴다 — 양손 +
 상체 포즈 150차원(FEATURE_DIM). 수집·학습·추론이 전부 같은 추출기를 거쳐야 형식이 어긋나지
 않기 때문이다 (doc/design.md 참고).
-
 사용법:
     python -m src.dataset.collect --label 멈춰 [--samples 30] [--frames 30]
 
@@ -40,6 +39,7 @@ from src.capture.extractor import (
     HandWarning,
     draw_detections,
     open_camera,
+    process_frame,
 )
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "asset"
@@ -91,18 +91,6 @@ class ButtonBar:
         """클릭된 버튼 이름을 반환하고 내부 상태는 비운다 (한 번 클릭 = 한 번만 반응하도록)."""
         clicked, self._clicked = self._clicked, None
         return clicked
-
-
-def process_frame(cap, extractor: FeatureExtractor, t0: float):
-    """프레임 1장을 읽어 검출까지 수행한다. 반환: (frame, 손결과, 포즈결과) 또는 (None,)*3."""
-    ok, frame = cap.read()
-    if not ok:
-        return None, None, None
-    frame = cv2.flip(frame, 1)  # 셀피 뷰 (landmark_viewer.py와 동일하게 좌우 반전)
-    # 비디오 모드는 단조 증가하는 타임스탬프(ms)가 필요 — t0(수집 시작 시각) 기준 경과 시간
-    timestamp_ms = int((time.monotonic() - t0) * 1000)
-    hand_result, pose_result = extractor.detect(frame, timestamp_ms)
-    return frame, hand_result, pose_result
 
 
 def show(frame, hand_result, pose_result, text: str, color, bar: ButtonBar, buttons,
