@@ -8,7 +8,8 @@
 상체 포즈 150차원(FEATURE_DIM). 수집·학습·추론이 전부 같은 추출기를 거쳐야 형식이 어긋나지
 않기 때문이다 (doc/design.md 참고).
 사용법:
-    python -m src.dataset.collect --label 멈춰 [--samples 30] [--frames 30]
+    python -m src.dataset.collect --label stop [--samples 30] [--frames 30]
+    python -m src.dataset.collect                 # --label 생략 시 번호로 고르는 메뉴가 뜬다
 
 조작 (화면 우상단 버튼 클릭 또는 키보드):
     START/PAUSE 버튼 (또는 SPACE) — 자동 수집 시작/일시정지.
@@ -47,6 +48,51 @@ MIN_DETECTED_RATIO = 0.5  # 손 감지 프레임이 이 비율 미만이면 SKIP
 
 WINDOW = "Collect"
 BTN_W, BTN_H, BTN_MARGIN = 150, 50, 10  # 버튼 하나의 가로/세로 크기와 버튼 사이 여백(픽셀)
+
+# doc/design.md에 현재 설계된 수신호 목록 — 오타 방지를 위한 참고용 메뉴일 뿐이다.
+# 클래스 목록 자체는 코드가 아니라 asset/ 폴더 이름으로 정해지므로(design.md 규약),
+# 여기 없는 이름을 --label로 줘도 막지 않는다 — 새 신호는 그냥 그 이름으로 수집하면 된다.
+KNOWN_LABELS = ["stop", "slow", "come", "back", "left_go", "right_go", "idle"]
+
+
+def choose_label(preset: str | None) -> str:
+    """라벨을 정한다.
+
+    --label을 줬으면 그대로 쓰되, 알려진 목록(KNOWN_LABELS)에 없으면 오타일 수 있다고
+    경고만 하고 진행한다 (새 신호 추가를 막지 않기 위해 차단하지는 않는다).
+    --label이 없으면 번호로 고르는 메뉴를 보여주되, 목록에 없는 이름을 직접 타이핑해도
+    받아준다 — 메뉴는 "고르기 편하게" 돕는 용도지 강제하는 용도가 아니다.
+    """
+    if preset is not None:
+        if preset not in KNOWN_LABELS:
+            print(f"⚠ '{preset}'은 알려진 라벨 목록에 없습니다 — 오타가 아니라면 새 신호로 그대로 진행합니다")
+        return preset
+
+    print("라벨을 선택하세요:")
+    for i, name in enumerate(KNOWN_LABELS, 1):
+        print(f"  {i}. {name}")
+    print(f"  {len(KNOWN_LABELS) + 1}. 직접 입력 (새 신호)")
+    while True:
+        choice = input("번호 또는 라벨명 입력: ").strip()
+        if not choice:
+            print("빈 값은 사용할 수 없습니다.")
+            continue
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(KNOWN_LABELS):
+                return KNOWN_LABELS[idx - 1]
+            if idx == len(KNOWN_LABELS) + 1:
+                custom = input("새 라벨 이름: ").strip()
+                if custom:
+                    return custom
+                print("빈 값은 사용할 수 없습니다.")
+                continue
+            print("목록에 없는 번호입니다.")
+            continue
+        # 번호가 아니라 라벨명을 직접 타이핑한 경우 — 목록에 없어도 새 신호로 그대로 받아준다
+        if choice not in KNOWN_LABELS:
+            print(f"⚠ '{choice}'은 알려진 라벨 목록에 없습니다 — 오타가 아니라면 새 신호로 그대로 진행합니다")
+        return choice
 
 
 # cv2 창엔 버튼 위젯이 없어서, 사각형을 직접 그리고 마우스 클릭 좌표가 그 사각형 안에
@@ -179,7 +225,8 @@ def countdown(cap, extractor, t0: float, seconds: float, status: str,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="수신호 특징 시퀀스 수집 (자동 연속)")
-    parser.add_argument("--label", required=True, help="수신호 라벨 (예: 멈춰)")
+    parser.add_argument("--label", default=None,
+                        help="수신호 라벨 (예: stop). 생략하면 번호로 고르는 메뉴가 뜬다")
     parser.add_argument("--samples", type=int, default=30, help="수집할 시퀀스 개수")
     parser.add_argument("--frames", type=int, default=30, help="시퀀스당 프레임 수")
     parser.add_argument("--prep", type=float, default=1.5, help="녹화 전 준비 시간(초)")
@@ -187,10 +234,11 @@ def main() -> None:
                         help="손 감지 품질 필터 끄기 (신호없음처럼 손이 없어도 되는 라벨)")
     args = parser.parse_args()
 
-    out_dir = DATA_DIR / args.label
+    label = choose_label(args.label)
+    out_dir = DATA_DIR / label
     out_dir.mkdir(parents=True, exist_ok=True)
     existing = len(list(out_dir.glob("*.npy")))
-    print(f"라벨 '{args.label}' — 기존 {existing}개, 목표 +{args.samples}개")
+    print(f"라벨 '{label}' — 기존 {existing}개, 목표 +{args.samples}개")
     print("화면의 START 버튼(또는 SPACE): 자동 수집 시작/일시정지, QUIT(또는 q/ESC): 종료")
 
     extractor = FeatureExtractor()
@@ -208,7 +256,7 @@ def main() -> None:
     # 상태 머신: collecting이 꺼져 있으면 대기 화면만 반복하고, 켜지면
     # "카운트다운 → 녹화 → (품질 검사 후) 저장" 한 사이클을 목표 개수(args.samples)만큼 반복한다.
     while saved < args.samples:
-        status = f"[{args.label}] {existing + saved}/{existing + args.samples}"
+        status = f"[{label}] {existing + saved}/{existing + args.samples}"
 
         if not collecting:
             # 대기 화면: START 클릭(또는 SPACE)으로 자동 수집 시작

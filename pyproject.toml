@@ -10,6 +10,7 @@ dependencies = [
     "torch==2.12.1",
     "scikit-learn==1.9.0",
     "websocket-client==1.9.0",
+    "tqdm==4.68.4",
 ]
 
 [build-system]

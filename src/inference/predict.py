@@ -32,7 +32,7 @@ from src.capture.extractor import (
 )
 from src.inference.hud import Hud # 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
 from src.inference.bridge import make_publisher
-from src.training.train import SignLSTM  # TODO: train.py 구현 전까지 미사용
+from src.training.train import SignLSTM
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_PATH = ROOT / "models" / "sign_classifier.pt"  # train.py가 저장하는 학습된 LSTM 가중치

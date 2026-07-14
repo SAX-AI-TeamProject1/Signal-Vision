@@ -289,8 +289,10 @@
     "inputs": [
         {
             "id": "signLabel",
-            "type": "promptString",
-            "description": "수집할 수신호 라벨 (자유 입력, 예: 멈춰)"
+            "type": "pickString",
+            "description": "수집할 수신호 라벨 선택 (doc/design.md 기준 — src/dataset/collect.py의 KNOWN_LABELS와 동일하게 유지)",
+            "options": ["stop", "slow", "come", "back", "left_go", "right_go", "idle"],
+            "default": "stop"
         }
     ]
 }
