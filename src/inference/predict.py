@@ -1,4 +1,4 @@
-# Last updated: 2026-07-14
+# Last updated: 2026-07-15
 
 '''
 실시간 수신호 추론
@@ -27,8 +27,10 @@ from src.capture.extractor import (
     FeatureExtractor,
     HandWarning,
     draw_detections,
+    hand_joint_positions,
     open_camera,
     process_frame,
+    upper_body_joint_positions,
 )
 from src.inference.hud import Hud # 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
 from src.inference.bridge import make_publisher
@@ -86,6 +88,10 @@ def main() -> None:
     parser.add_argument("--udp-port", type=int, default=5555)
     parser.add_argument("--rosbridge-url", default="ws://localhost:9090")
     parser.add_argument("--ros-topic", default="/hand_signal")
+    parser.add_argument("--publish-pose", action="store_true",
+                        help="상체 8관절 좌표를 매 프레임 별도 토픽으로 발행 (Gazebo 휴머노이드 "
+                             "모션 트래킹용 — 분류 신호와는 무관하게 독립적으로 전송)")
+    parser.add_argument("--pose-topic", default="/upper_body_pose")
     args = parser.parse_args()
 
     # GPU(cuda)가 있으면 그쪽에서 추론(빠름), 없으면 CPU로 폴백 — 이후 모델과 입력 텐서를
@@ -94,9 +100,12 @@ def main() -> None:
     model, labels, num_frames = load_model(args.model, device)
     print(f"모델 로드: {args.model.name}  라벨: {labels}")
     print(f"안정화: 신뢰도 ≥ {args.threshold}, 연속 {args.consecutive}회 일치 시 확정")
+    if args.publish_pose:
+        print(f"상체 포즈 발행: 켜짐 → 토픽 {args.pose_topic}")
 
     publisher = make_publisher(args.publish, udp_host=args.udp_host, udp_port=args.udp_port,
-                               rosbridge_url=args.rosbridge_url, ros_topic=args.ros_topic)
+                               rosbridge_url=args.rosbridge_url, ros_topic=args.ros_topic,
+                               pose_topic=args.pose_topic)
     hud = Hud()  # 확률 패널·텍스트·창 표시 전담 (predict.py는 이 객체에만 그리기를 위임)
     extractor = FeatureExtractor()  # 손+포즈 랜드마커 → 150차원 특징 벡터
     cap = open_camera()
@@ -121,6 +130,16 @@ def main() -> None:
         warning.update(hand_result)
         warning.draw(frame)
         window.append(FeatureExtractor.vector(hand_result, pose_result))
+
+        # 모션 트래킹 발행 — 분류(안정화 필터·안전 가드) 로직과는 완전히 독립적으로,
+        # 사람이 검출되는 한 매 프레임 그대로 흘려보낸다 (Gazebo 로봇이 실시간으로 따라 하는 용도).
+        # 팔(joints)이 없으면 손만 있어도 의미 없는 데이터라 보내지 않지만, 손은 한쪽만
+        # 잡혀도(hands["left"]/["right"] 중 하나만 None) 있는 쪽만 그대로 실어 보낸다.
+        if args.publish_pose:
+            joints = upper_body_joint_positions(pose_result)
+            if joints is not None:
+                hands = hand_joint_positions(hand_result)
+                publisher.publish_pose(joints, hands["left"], hands["right"])
 
         probs, top = None, None
         status = "버퍼 채우는 중..."

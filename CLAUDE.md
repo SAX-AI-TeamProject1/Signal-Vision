@@ -12,7 +12,7 @@ Repository docs and code comments are written in Korean; match that convention w
 
 ## Project overview
 
-Industrial hand-signal recognition: captures webcam video (OpenCV), extracts hand + pose landmarks (MediaPipe), classifies dynamic hand signals with a PyTorch LSTM, and forwards the classification result over a rosbridge websocket. **This repo's scope ends at emitting the classification result** — a separate project (`../Mocap-Sim`) consumes it via ROS 2 to drive a Gazebo simulated machine (stop/slow/approach/reverse). Do not add ROS 2 / Gazebo code here.
+Industrial hand-signal recognition: captures webcam video (OpenCV), extracts hand + pose landmarks (MediaPipe), classifies dynamic hand signals with a PyTorch LSTM, and forwards the classification result over a rosbridge websocket. **This repo's scope ends at emitting the classification result** (and, optionally, raw upper-body joint positions for motion tracking) — a separate project (`../Signal-Simulation`) consumes it via ROS 2 to drive Gazebo robots. Do not add ROS 2 / Gazebo code here.
 
 Pipeline: camera → MediaPipe HandLandmarker + PoseLandmarker → 150-dim feature sequence (30 frames) → LSTM classifier → result publisher (rosbridge/UDP).
 
@@ -68,5 +68,6 @@ Run any module the same way manually, e.g. `.venv/bin/python -m src.training.tra
   - Camera backend selection (`cv2.VideoCapture`) should branch on `platform` only when necessary (Windows: `CAP_DSHOW`/`CAP_MSMF`, macOS: `CAP_AVFOUNDATION`).
   - Write tooling in Python, not shell scripts, to avoid OS-specific scripts (the one exception, `scripts/watch_py_saves.sh`, is dev tooling, not part of the pipeline).
   - Do not put webcam-using code in Docker (no camera access from containers on either OS).
-- Result delivery is rosbridge websocket (`src/inference/publisher.py`, topic `/hand_signal`, JSON payload `{"signal", "confidence", "timestamp"}`), with a UDP backend for local debugging. Publishing must keep running even if no rosbridge server is connected (auto-reconnect), and should emit both on state change and on a periodic heartbeat.
+- Result delivery is rosbridge websocket (`src/inference/bridge.py`, topic `/hand_signal`, JSON payload `{"signal", "confidence", "timestamp"}`), with a UDP backend for local debugging. Publishing must keep running even if no rosbridge server is connected (auto-reconnect), and should emit both on state change and on a periodic heartbeat.
+- Optional motion-tracking output: `predict.py --publish-pose` streams raw upper-body joint positions (8 joints × xyz) plus per-hand finger landmarks (21 points × xyz each, present only when that hand is detected) on a second topic `/upper_body_pose`, every frame a person is detected — independent of the signal classification/stabilization logic. All coordinates are unmodified MediaPipe normalized values; any retargeting to robot joint angles is the consumer's (`Signal-Simulation`) responsibility, not this repo's.
 - Training data is self-collected only (`asset/`); don't introduce external datasets as primary training data without checking `doc/ml-flow.md` §1 first.

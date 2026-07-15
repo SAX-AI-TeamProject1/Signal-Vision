@@ -97,10 +97,17 @@ mocap-sample/
 - **안전 규칙 (계층별)**
   - 추론: 신뢰도 임계값 미만 or 미학습 동작 → "unknown" / 사람(포즈) 미감지 → 모델 판단 무시하고 "unknown"
   - 기계(Mocap-Sim): unknown → 정지 / 하트비트 2초 끊김 → 무조건 정지 / idle → 직전 상태 유지
-- **분류 결과 전달 = rosbridge 웹소켓** — `src/inference/publisher.py`
+- **분류 결과 전달 = rosbridge 웹소켓** — `src/inference/bridge.py`
   - 메시지: std_msgs/String에 JSON `{"signal": "stop", "confidence": 0.93, "timestamp": ...}`
   - 토픽 `/hand_signal`, 상태 변화 시 즉시 + 1초 주기 하트비트, 서버 없어도 추론 계속(자동 재접속)
   - 디버깅용 UDP 백엔드(`--publish udp`) — Mac 단독 데모의 어댑터가 이걸 수신
+- **상체+손가락 모션 트래킹 전달 (선택, `predict.py --publish-pose`)** — 분류와는 별개로, 상체
+  8관절(어깨/팔꿈치/손목/골반) xyz + 검출된 손의 21관절(손가락 포함) xyz를 사람이 검출되는
+  한 매 프레임 토픽 `/upper_body_pose`로 발행한다
+  (JSON `{"joints": {...}, "left_hand": {...}, "right_hand": {...}, "timestamp": ...}`,
+  `*_hand`는 그 손이 검출됐을 때만 포함). 좌표는 MediaPipe 정규화 값 그대로이며, 로봇
+  관절각으로의 리타겟팅은 수신 측(Signal-Simulation)의 책임이다 — 이 저장소는 원시 좌표를
+  내보내는 데까지만 관여한다.
 
 ## 악조건 운영 설계 (ODD)와 고장 유형 대응표
 

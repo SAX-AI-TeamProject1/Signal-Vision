@@ -30,12 +30,25 @@ DEFAULT_MODEL_PATH = ROOT / "models" / "sign_classifier.pt"  # 학습 결과 저
 
 
 class SignLSTM(nn.Module):
-    """랜드마크 시퀀스 (T, 150) → 수신호 클래스 분류.
+    '''랜드마크 시퀀스 (batch, T, 150) → 수신호 클래스 로짓 (batch, num_classes).
 
-    LSTM으로 시퀀스 전체를 훑은 뒤, 마지막 타임스텝의 은닉 상태 하나만 분류head에 넣는다 —
-    수신호는 순간 자세가 아니라 시간에 따른 궤적(동적 제스처)이라, 마지막 시점에는 그
-    동작 전체의 흐름이 은닉 상태에 요약되어 있다는 전제다 (doc/ml-flow.md 3절 근거).
-    """
+    구조: LSTM(다층)으로 시퀀스를 처음부터 끝까지 훑어 매 타임스텝의 은닉 상태를 뽑고,
+    그중 마지막 타임스텝의 은닉 상태 하나만 Dropout → Linear 분류head에 넣어 클래스를 정한다.
+    수신호는 손이 멈춘 순간의 자세가 아니라 30프레임에 걸친 궤적(동적 제스처)이 의미를
+    만들기 때문에, 시퀀스 전체를 순서대로 읽어 "지금까지 본 동작을 요약한 상태"를 유지할 수
+    있는 LSTM을 쓴다 — 마지막 시점엔 그 요약(은닉 상태)에 동작 전체의 흐름이 반영되어
+    있다는 전제다 (doc/ml-flow.md 3절, doc/design.md 근거).
+
+    기본 하이퍼파라미터(hidden=64, layers=2)는 라벨당 30~100개 수준의 소량 데이터에서
+    "가장 단순한 모델로 시작해 부족할 때만 복잡도를 올린다"는 원칙을 따른 값이다.
+
+    Args:
+        input_dim: 프레임당 특징 차원 (150 — extractor.FEATURE_DIM과 일치해야 함)
+        hidden_dim: LSTM 은닉 상태 크기
+        num_classes: 분류할 수신호 클래스 개수 (asset/ 라벨 폴더 수)
+        num_layers: LSTM 층 수 (쌓을수록 표현력↑, 과적합 위험↑ — 소량 데이터라 2층에서 시작)
+        dropout: 과적합 방지용 드롭아웃 확률 (레이어 내부 + 분류head 앞 양쪽에 적용)
+    '''
 
     def __init__(self, input_dim: int, hidden_dim: int, num_classes: int,
                  num_layers: int = 2, dropout: float = 0.3):
@@ -51,6 +64,7 @@ class SignLSTM(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (batch, T, input_dim) 시퀀스 배치 → (batch, num_classes) 로짓."""
         out, _ = self.lstm(x)  # out: (batch, T, hidden_dim) — 매 타임스텝의 은닉 상태
         return self.head(out[:, -1])  # 마지막 타임스텝의 은닉 상태로 분류
 

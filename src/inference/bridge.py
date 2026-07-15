@@ -1,4 +1,4 @@
-# Last updated: 2026-07-14
+# Last updated: 2026-07-15
 '''
 분류 결과 외부 전달 인터페이스.
 
@@ -12,13 +12,39 @@
     udp       — JSON을 UDP 데이터그램으로 송신. 의존성·서버 불필요, 디버깅용.
 
 메시지 형식 (JSON, ROS에서는 std_msgs/String.data 안에 담김):
-    {"signal": "stop", "confidence": 0.93, "timestamp": 1783300000.0}
-    signal은 모델 라벨 그대로, 인식 불가 상태는 "unknown" (기계 쪽 안전 기본값 = 정지).
+    분류 결과 (토픽 /hand_signal 기본값):
+        {"signal": "stop", "confidence": 0.93, "timestamp": 1783300000.0}
+        signal은 모델 라벨 그대로, 인식 불가 상태는 "unknown" (기계 쪽 안전 기본값 = 정지).
+    상체 포즈 + 손가락 (토픽 /upper_body_pose 기본값, --publish-pose로 켬):
+        {"joints": {"left_shoulder": [x, y, z], "right_shoulder": [x, y, z], ...},
+         "left_hand": {"wrist": [x, y, z], "thumb_cmc": [x, y, z], ...} 또는 생략(미검출),
+         "right_hand": {...} 또는 생략,
+         "timestamp": 1783300000.0}
+        joints는 관절 8개(어깨/팔꿈치/손목/골반), *_hand는 손 21관절(손가락 포함) —
+        전부 MediaPipe 정규화 좌표 그대로(가공 없음). 로봇 관절각으로 바꾸는 리타겟팅은
+        이 값을 받는 쪽(Signal-Simulation)의 책임이다.
 '''
 
 import json # 메시지(signal/confidence/timestamp)를 문자열로 직렬화
 import socket # UdpPublisher가 쓰는 UDP 소켓
 import time # 메시지 timestamp, rosbridge 재접속 쿨다운 계산
+
+Joints = dict[str, tuple[float, float, float]]  # {관절이름: (x, y, z)} — publish_pose 공용 타입
+
+
+def _pose_payload(joints: Joints, left_hand: Joints | None, right_hand: Joints | None) -> dict:
+    """publish_pose가 세 백엔드 공통으로 쓰는 페이로드 딕셔너리를 만든다.
+
+    손은 검출 안 됐을 수 있으므로(한쪽만 잡히거나 둘 다 안 잡힐 수 있음) None이면
+    아예 키를 넣지 않는다 — 수신 측은 "left_hand" 키 유무로 그 손의 검출 여부를 안다.
+    """
+    payload = {"joints": {k: list(v) for k, v in joints.items()}, "timestamp": time.time()}
+    if left_hand is not None:
+        payload["left_hand"] = {k: list(v) for k, v in left_hand.items()}
+    if right_hand is not None:
+        payload["right_hand"] = {k: list(v) for k, v in right_hand.items()}
+    return payload
+
 
 class ConsolePublisher:
     """전송 없이 콘솔 출력만 (기본값, --publish 미지정 시).
@@ -29,6 +55,10 @@ class ConsolePublisher:
 
     def publish(self, signal: str, confidence: float) -> None:
         pass  # predict.py가 이미 콘솔에 출력하므로 아무것도 하지 않는다
+
+    def publish_pose(self, joints: Joints, left_hand: Joints | None = None,
+                     right_hand: Joints | None = None) -> None:
+        pass  # 포즈는 매 프레임(30fps)이라 콘솔에 찍으면 로그가 도배되므로 조용히 무시
 
     def close(self) -> None:
         pass  # 정리할 리소스가 없음
@@ -49,6 +79,13 @@ class UdpPublisher:
         )
         self.sock.sendto(payload.encode("utf-8"), self.addr)
 
+    def publish_pose(self, joints: Joints, left_hand: Joints | None = None,
+                     right_hand: Joints | None = None) -> None:
+        # UDP는 토픽 개념이 없어 signal 메시지와 같은 주소로 보낸다 — 수신 측은
+        # "joints" 키 유무로 두 메시지 종류를 구분한다 (signal 메시지엔 이 키가 없음)
+        payload = json.dumps(_pose_payload(joints, left_hand, right_hand), ensure_ascii=False)
+        self.sock.sendto(payload.encode("utf-8"), self.addr)
+
     def close(self) -> None:
         self.sock.close()
 
@@ -62,9 +99,11 @@ class RosbridgePublisher:
 
     RECONNECT_COOLDOWN = 5.0  # 연결 끊김/실패 후 재시도까지 대기하는 최소 간격(초) — 매 프레임 재시도해 추론 루프를 막지 않기 위함
 
-    def __init__(self, url: str = "ws://localhost:9090", topic: str = "/hand_signal") -> None:
+    def __init__(self, url: str = "ws://localhost:9090", topic: str = "/hand_signal",
+                 pose_topic: str = "/upper_body_pose") -> None:
         self.url = url
         self.topic = topic
+        self.pose_topic = pose_topic  # 상체 포즈 스트리밍용 별도 토픽 (--publish-pose로 켤 때만 실제로 씀)
         self.ws = None  # 연결 안 됐거나 끊긴 상태 = None (publish()가 이 값으로 재접속 필요 여부 판단)
         self._last_attempt = 0.0  # 마지막 연결 시도 시각 (RECONNECT_COOLDOWN 계산 기준)
         self._connect()  # 생성 시점에 1회 시도 — 서버가 없어도 예외를 던지지 않고 재시도 상태로 남는다
@@ -75,45 +114,64 @@ class RosbridgePublisher:
         self._last_attempt = time.monotonic()
         try:
             self.ws = websocket.create_connection(self.url, timeout=2)
-            # rosbridge 프로토콜: 메시지를 보내기 전에 토픽을 advertise해야 구독자가 타입을 안다
-            self.ws.send(json.dumps({
-                "op": "advertise",
-                "topic": self.topic,
-                "type": "std_msgs/String",
-            }))
-            print(f"[publisher] rosbridge 연결됨 → {self.url}  토픽 {self.topic}")
+            # rosbridge 프로토콜: 메시지를 보내기 전에 토픽을 advertise해야 구독자가 타입을 안다.
+            # 두 토픽(신호/포즈) 다 JSON을 담은 std_msgs/String이라 같은 방식으로 advertise한다.
+            for topic in (self.topic, self.pose_topic):
+                self.ws.send(json.dumps({
+                    "op": "advertise",
+                    "topic": topic,
+                    "type": "std_msgs/String",
+                }))
+            print(f"[publisher] rosbridge 연결됨 → {self.url}  토픽 {self.topic}, {self.pose_topic}")
         except Exception as e:
             self.ws = None  # 연결 실패해도 프로세스를 죽이지 않고 다음 publish() 호출에서 재시도
             print(f"[publisher] rosbridge 연결 실패 ({e}) — {self.RECONNECT_COOLDOWN}초 후 재시도")
 
+    def _ensure_connected(self) -> bool:
+        """연결돼 있으면 True, 안 됐으면 쿨다운 지난 경우에만 재시도하고 결과를 반환한다."""
+        if self.ws is not None:
+            return True
+        # 매 프레임 재접속을 시도하면 서버가 죽어있는 동안 추론 루프가 계속 지연되므로
+        # 쿨다운이 지났을 때만 재시도한다
+        if time.monotonic() - self._last_attempt >= self.RECONNECT_COOLDOWN:
+            self._connect()
+        return self.ws is not None
+
+    def _send(self, topic: str, data: str, on_fail_label: str) -> None:
+        """std_msgs/String으로 감싼 JSON 문자열 하나를 지정 토픽에 발행한다 (publish/publish_pose 공용)."""
+        try:
+            # std_msgs/String 메시지는 data 필드 하나뿐이라, 이미 만든 JSON 문자열을
+            # 그 안에 한 번 더 감싸 넣는다 (그래서 json.dumps를 두 번 호출)
+            self.ws.send(json.dumps({
+                "op": "publish",
+                "topic": topic,
+                "msg": {"data": data},
+            }))
+        except Exception as e:
+            print(f"[publisher] rosbridge {on_fail_label} 전송 실패 ({e}) — 재접속 예정")
+            self.ws = None  # 다음 호출에서 쿨다운 이후 재연결 시도
+
     def publish(self, signal: str, confidence: float) -> None:
-        if self.ws is None:
-            # 매 프레임 재접속을 시도하면 서버가 죽어있는 동안 추론 루프가 계속 지연되므로
-            # 쿨다운이 지났을 때만 재시도한다
-            if time.monotonic() - self._last_attempt >= self.RECONNECT_COOLDOWN:
-                self._connect()
-            if self.ws is None:  # 재시도했는데도 여전히 실패 → 이번 프레임은 그냥 건너뜀
-                return
+        if not self._ensure_connected():
+            return  # 재시도했는데도 여전히 실패 → 이번 프레임은 그냥 건너뜀
         data = json.dumps(
             {"signal": signal, "confidence": round(confidence, 3), "timestamp": time.time()},
             ensure_ascii=False,
         )
-        try:
-            # std_msgs/String 메시지는 data 필드 하나뿐이라, 위에서 만든 JSON 문자열을
-            # 그 안에 한 번 더 감싸 넣는다 (그래서 json.dumps를 두 번 호출)
-            self.ws.send(json.dumps({
-                "op": "publish",
-                "topic": self.topic,
-                "msg": {"data": data},
-            }))
-        except Exception as e:
-            print(f"[publisher] rosbridge 전송 실패 ({e}) — 재접속 예정")
-            self.ws = None  # 다음 publish() 호출에서 쿨다운 이후 재연결 시도
+        self._send(self.topic, data, "신호")
+
+    def publish_pose(self, joints: Joints, left_hand: Joints | None = None,
+                     right_hand: Joints | None = None) -> None:
+        if not self._ensure_connected():
+            return
+        data = json.dumps(_pose_payload(joints, left_hand, right_hand), ensure_ascii=False)
+        self._send(self.pose_topic, data, "포즈")
 
     def close(self) -> None:
         if self.ws is not None:
             try:
-                self.ws.send(json.dumps({"op": "unadvertise", "topic": self.topic}))
+                for topic in (self.topic, self.pose_topic):
+                    self.ws.send(json.dumps({"op": "unadvertise", "topic": topic}))
                 self.ws.close()
             except Exception:
                 pass  # 종료 중 전송 실패는 무시 — 이미 끊기는 중이므로 재시도할 필요 없음
@@ -121,15 +179,15 @@ class RosbridgePublisher:
 
 
 def make_publisher(kind: str, *, udp_host: str, udp_port: int,
-                   rosbridge_url: str, ros_topic: str):
+                   rosbridge_url: str, ros_topic: str, pose_topic: str = "/upper_body_pose"):
     """predict.py의 --publish 옵션에 따라 백엔드를 골라 생성하는 팩토리.
 
     kind: "udp" | "rosbridge" | 그 외(기본값) → ConsolePublisher.
-    세 클래스 모두 publish(signal, confidence) / close() 인터페이스가 동일해서,
-    predict.py는 어떤 백엔드가 반환됐는지 신경 쓰지 않고 그대로 호출한다.
+    세 클래스 모두 publish(signal, confidence) / publish_pose(joints) / close() 인터페이스가
+    동일해서, predict.py는 어떤 백엔드가 반환됐는지 신경 쓰지 않고 그대로 호출한다.
     """
     if kind == "udp":
         return UdpPublisher(udp_host, udp_port)
     if kind == "rosbridge":
-        return RosbridgePublisher(rosbridge_url, ros_topic)
+        return RosbridgePublisher(rosbridge_url, ros_topic, pose_topic)
     return ConsolePublisher()

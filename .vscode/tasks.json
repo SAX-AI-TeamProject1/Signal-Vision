@@ -232,6 +232,48 @@
             "problemMatcher": []
         },
         {
+            "label": "실행: 실시간 추론 + 모션 트래킹 발행 (rosbridge → Signal-Simulation)",
+            "type": "shell",
+            "osx": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--publish", "rosbridge",
+                    "--rosbridge-url", "${input:rosbridgeUrl}",
+                    "--publish-pose"
+                ]
+            },
+            "linux": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--publish", "rosbridge",
+                    "--rosbridge-url", "${input:rosbridgeUrl}",
+                    "--publish-pose"
+                ]
+            },
+            "windows": {
+                "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--publish", "rosbridge",
+                    "--rosbridge-url", "${input:rosbridgeUrl}",
+                    "--publish-pose"
+                ]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "시뮬 데모: Gazebo + 인식기 (Mac)",
             "type": "shell",
             "osx": {
@@ -293,6 +335,12 @@
             "description": "수집할 수신호 라벨 선택 (doc/design.md 기준 — src/dataset/collect.py의 KNOWN_LABELS와 동일하게 유지)",
             "options": ["stop", "slow", "come", "back", "left_go", "right_go", "idle"],
             "default": "stop"
+        },
+        {
+            "id": "rosbridgeUrl",
+            "type": "promptString",
+            "description": "Signal-Simulation(리눅스 VM)의 rosbridge 웹소켓 주소 — VM의 실제 IP로 바꿔서 입력 (예: ws://192.168.64.5:9090)",
+            "default": "ws://localhost:9090"
         }
     ]
 }
