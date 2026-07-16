@@ -1,4 +1,4 @@
-# Last updated: 2026-07-15
+# Last updated: 2026-07-16
 
 """공용 특징 추출기: 양손 랜드마크 + 상체 포즈 → 고정 크기 벡터.
 
@@ -64,61 +64,6 @@ HAND_DIM = LANDMARKS_PER_HAND * 3  # 21관절 × xyz = 63
 UPPER_BODY_JOINTS = [11, 12, 13, 14, 15, 16, 23, 24]  # 어깨/팔꿈치/손목/골반
 POSE_DIM = len(UPPER_BODY_JOINTS) * 3  # 8관절 × xyz = 24
 FEATURE_DIM = HAND_DIM * 2 + POSE_DIM  # 왼손 63 + 오른손 63 + 포즈 24 = 150
-
-# UPPER_BODY_JOINTS의 MediaPipe 인덱스와 1:1 순서 대응하는 사람이 읽기 쉬운 이름.
-# left/right는 MediaPipe 자체 판정 기준(이미 좌우 반전된 셀피 뷰 프레임 기준) — 손의
-# handedness와 동일한 관례를 그대로 따른다.
-UPPER_BODY_JOINT_NAMES = [
-    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist", "left_hip", "right_hip",
-]
-
-
-def upper_body_joint_positions(pose_result) -> dict[str, tuple[float, float, float]] | None:
-    """검출된 상체 8관절을 {관절이름: (x, y, z)} 딕셔너리로 반환한다 (모션 트래킹 발행용).
-
-    좌표는 MediaPipe 정규화 값 그대로(x/y는 0~1, z는 상대 깊이)이고 아무 변환도 하지 않는다 —
-    이 좌표를 로봇 관절각으로 바꾸는(리타겟팅) 책임은 이 값을 받는 쪽(Signal-Simulation)에
-    있고, 여기서는 원시 좌표만 그대로 내보낸다 (이 저장소의 책임 범위는 여기까지, design.md 참고).
-    사람이 검출 안 되면 None.
-    """
-    if not pose_result.pose_landmarks:
-        return None
-    lms = pose_result.pose_landmarks[0]
-    return {
-        name: (lms[j].x, lms[j].y, lms[j].z)
-        for name, j in zip(UPPER_BODY_JOINT_NAMES, UPPER_BODY_JOINTS)
-    }
-
-
-# MediaPipe HandLandmarker의 21개 관절 인덱스(0~20)와 1:1 순서 대응하는 이름 —
-# 손목(0) + 손가락 5개 × 4관절(밑동/중간/끝쪽 관절 + 손끝) 순서는 MediaPipe 공식 토폴로지 그대로.
-HAND_LANDMARK_NAMES = [
-    "wrist",
-    "thumb_cmc", "thumb_mcp", "thumb_ip", "thumb_tip",
-    "index_mcp", "index_pip", "index_dip", "index_tip",
-    "middle_mcp", "middle_pip", "middle_dip", "middle_tip",
-    "ring_mcp", "ring_pip", "ring_dip", "ring_tip",
-    "pinky_mcp", "pinky_pip", "pinky_dip", "pinky_tip",
-]
-
-
-def hand_joint_positions(
-    hand_result,
-) -> dict[str, dict[str, tuple[float, float, float]] | None]:
-    """검출된 손 21관절을 {"left": {관절이름: (x,y,z), ...}, "right": {...}} 형태로 반환한다.
-
-    양손 각각 독립적으로 검출 여부를 따진다 — 한쪽만 잡히면 그 슬롯만 채워지고 반대쪽은
-    None. 좌표는 MediaPipe 정규화 값 그대로(가공 없음), FeatureExtractor.vector()가 손
-    슬롯을 나누는 것과 동일하게 handedness로 좌/우를 가른다.
-    """
-    result: dict[str, dict[str, tuple[float, float, float]] | None] = {"left": None, "right": None}
-    for hand_lms, handedness in zip(hand_result.hand_landmarks, hand_result.handedness):
-        side = "left" if handedness[0].category_name == "Left" else "right"
-        result[side] = {
-            name: (lm.x, lm.y, lm.z) for name, lm in zip(HAND_LANDMARK_NAMES, hand_lms)
-        }
-    return result
 
 
 def _ensure_model(path: Path, url: str, label: str) -> Path:

@@ -232,7 +232,7 @@
             "problemMatcher": []
         },
         {
-            "label": "실행: 실시간 추론 + 모션 트래킹 발행 (rosbridge → Signal-Simulation)",
+            "label": "실행: 실시간 추론 + rosbridge 발행 (Signal-Simulation 연동)",
             "type": "shell",
             "osx": {
                 "command": "${workspaceFolder}/.venv/bin/python",
@@ -240,8 +240,7 @@
                     "-m",
                     "src.inference.predict",
                     "--publish", "rosbridge",
-                    "--rosbridge-url", "${input:rosbridgeUrl}",
-                    "--publish-pose"
+                    "--rosbridge-url", "${input:rosbridgeUrl}"
                 ]
             },
             "linux": {
@@ -250,8 +249,7 @@
                     "-m",
                     "src.inference.predict",
                     "--publish", "rosbridge",
-                    "--rosbridge-url", "${input:rosbridgeUrl}",
-                    "--publish-pose"
+                    "--rosbridge-url", "${input:rosbridgeUrl}"
                 ]
             },
             "windows": {
@@ -260,8 +258,7 @@
                     "-m",
                     "src.inference.predict",
                     "--publish", "rosbridge",
-                    "--rosbridge-url", "${input:rosbridgeUrl}",
-                    "--publish-pose"
+                    "--rosbridge-url", "${input:rosbridgeUrl}"
                 ]
             },
             "options": {
@@ -339,7 +336,7 @@
         {
             "id": "rosbridgeUrl",
             "type": "promptString",
-            "description": "Signal-Simulation(리눅스 VM)의 rosbridge 웹소켓 주소 — VM의 실제 IP로 바꿔서 입력 (예: ws://192.168.64.5:9090)",
+            "description": "Signal-Simulation의 rosbridge 웹소켓 주소 (같은 리눅스 머신이면 기본값 그대로 두면 됨)",
             "default": "ws://localhost:9090"
         }
     ]
