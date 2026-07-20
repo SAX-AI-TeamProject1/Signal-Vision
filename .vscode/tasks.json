@@ -232,12 +232,51 @@
             "problemMatcher": []
         },
         {
+            "label": "실행: 실시간 추론 + rosbridge 발행 (Signal-Simulation 연동)",
+            "type": "shell",
+            "osx": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--publish", "rosbridge",
+                    "--rosbridge-url", "${input:rosbridgeUrl}"
+                ]
+            },
+            "linux": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--publish", "rosbridge",
+                    "--rosbridge-url", "${input:rosbridgeUrl}"
+                ]
+            },
+            "windows": {
+                "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--publish", "rosbridge",
+                    "--rosbridge-url", "${input:rosbridgeUrl}"
+                ]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "시뮬 데모: Gazebo + 인식기 (Mac)",
             "type": "shell",
             "osx": {
                 "command": "python3",
                 "args": [
-                    "${workspaceFolder}/../Mocap-Sim/tools/run_demo_mac.py"
+                    "${workspaceFolder}/../Signal-Simulation/tools/run_demo_mac.py"
                 ]
             },
             "options": {
@@ -289,8 +328,16 @@
     "inputs": [
         {
             "id": "signLabel",
+            "type": "pickString",
+            "description": "수집할 수신호 라벨 선택 (doc/design.md 기준 — src/dataset/collect.py의 KNOWN_LABELS와 동일하게 유지)",
+            "options": ["stop", "slow", "come", "back", "left_go", "right_go", "idle"],
+            "default": "stop"
+        },
+        {
+            "id": "rosbridgeUrl",
             "type": "promptString",
-            "description": "수집할 수신호 라벨 (자유 입력, 예: 멈춰)"
+            "description": "Signal-Simulation의 rosbridge 웹소켓 주소 (같은 리눅스 머신이면 기본값 그대로 두면 됨)",
+            "default": "ws://localhost:9090"
         }
     ]
 }

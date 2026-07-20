@@ -1,4 +1,4 @@
-# Last updated: 2026-07-13
+# Last updated: 2026-07-15
 """패키지 설치(pip install -e .) 실행 후 성공/실패를 명확한 배너로 출력."""
 
 import subprocess
@@ -11,6 +11,16 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> int:
+    step("pip 사용 가능 여부 확인 중")
+    pip_check = subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, text=True)
+    if pip_check.returncode != 0:
+        banner(
+            False,
+            f"이 인터프리터에 pip이 없습니다 (.venv가 손상됐을 수 있음): {sys.executable}\n"
+            "  '1. venv 생성' 태스크를 다시 실행해 .venv를 재생성해 보세요.",
+        )
+        return 1
+
     step("pip install -e . 실행 중 (처음이면 수 분 걸릴 수 있음)")
     result = subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], cwd=ROOT)
     if result.returncode != 0:
