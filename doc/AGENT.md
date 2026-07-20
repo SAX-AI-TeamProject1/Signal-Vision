@@ -8,7 +8,7 @@ OpenCV와 MediaPipe 기반 **산업 현장 수신호(hand signal) 인식** 프�
 
 **최종 목표:** 웹캠 앞에서 작업자가 수신호를 하면 Gazebo 시뮬레이션의 공정 기계가 인식·대응하는 것 (예: 접근 중 '멈춰' → 정지, '천천히' → 감속). **이 저장소의 범위는 수신호 인식(데이터 수집 → 학습 → 실시간 추론)까지다.** ROS 2 / Gazebo 기계 제어는 별도 프로젝트에서 다루며, 이 저장소는 분류 결과를 외부로 전달하는 것까지만 책임진다.
 
-**현재 상태:** 전체 파이프라인 완성 + ROS 2 연동 실증 완료 (2026-07-07). 웹캠 인식(자체 수집 6클래스, test 77.8%) → rosbridge → Ubuntu VM(UTM)의 ROS 2 Jazzy + Gazebo Harmonic 기계 제어까지 end-to-end 동작 확인. 시뮬레이터는 별도 프로젝트 `../Mocap-Sim`. 남은 작업: 데이터 보강(라벨당 100개 목표, `back` 라벨 추가, idle에 손 안 보이는 변형 포함) → 재학습으로 인식 정확도 향상. 상세 설계는 `doc/design.md`, ML 플로우는 `doc/ml-flow.md`, **진행 상황·할 일은 `doc/TODO.md`** 참고 (작업 완료 시 TODO.md의 완료 로그에 날짜와 함께 기록할 것).
+**현재 상태:** 전체 파이프라인 완성 + ROS 2 연동 실증 완료 (2026-07-07). 웹캠 인식(자체 수집 6클래스, test 77.8%) → rosbridge → Ubuntu VM(UTM)의 ROS 2 Jazzy + Gazebo Harmonic 기계 제어까지 end-to-end 동작 확인. 시뮬레이터는 별도 프로젝트 `../Signal-Simulation`. 남은 작업: 데이터 보강(라벨당 100개 목표, `back` 라벨 추가, idle에 손 안 보이는 변형 포함) → 재학습으로 인식 정확도 향상. 상세 설계는 `doc/design.md`, ML 플로우는 `doc/ml-flow.md`, **진행 상황·할 일은 `doc/TODO.md`** 참고 (작업 완료 시 TODO.md의 완료 로그에 날짜와 함께 기록할 것).
 
 ## 셋업
 
