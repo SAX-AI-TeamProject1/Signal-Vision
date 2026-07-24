@@ -276,7 +276,7 @@
             "osx": {
                 "command": "python3",
                 "args": [
-                    "${workspaceFolder}/../Mocap-Sim/tools/run_demo_mac.py"
+                    "${workspaceFolder}/../Signal-Simulation/tools/run_demo_mac.py"
                 ]
             },
             "options": {
