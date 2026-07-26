@@ -1,4 +1,4 @@
-# Last updated: 2026-07-14
+# Last updated: 2026-07-16
 '''
 분류 결과 외부 전달 인터페이스.
 
@@ -19,6 +19,7 @@
 import json # 메시지(signal/confidence/timestamp)를 문자열로 직렬화
 import socket # UdpPublisher가 쓰는 UDP 소켓
 import time # 메시지 timestamp, rosbridge 재접속 쿨다운 계산
+
 
 class ConsolePublisher:
     """전송 없이 콘솔 출력만 (기본값, --publish 미지정 시).

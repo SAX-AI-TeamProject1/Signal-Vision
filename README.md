@@ -2,7 +2,7 @@
 
 웹캠 영상에서 작업자의 **수신호(hand signal)** 를 실시간 인식해 분류 결과를 내보내는 프로젝트.
 **이 저장소의 범위는 분류 결과를 내보내는 데까지**이고, 그 결과를 ROS 2로 받아 Gazebo
-시뮬레이션의 공정 기계를 제어하는 파트는 별도 프로젝트 [`../Mocap-Sim`](../Mocap-Sim)이 담당한다.
+시뮬레이션의 공정 기계를 제어하는 파트는 별도 프로젝트 [`../Signal-Simulation`](../Signal-Simulation)이 담당한다.
 
 ```
 웹캠 → MediaPipe 랜드마크(손+상체 포즈) → LSTM 분류 → 결과 발행(rosbridge/UDP)
@@ -41,7 +41,7 @@ Python **3.12 필수** (`pyproject.toml`에 `>=3.12,<3.13`로 고정, 의존성�
 | 실행: 데이터 수집 (dataset) | 라벨 입력 → 자동 연속 수집 (클릭 버튼 UI) | 동작함 |
 | 실행: 모델 학습 (training) | `asset/` 스캔 → LSTM 학습 → 모델 저장 | 예정 (`train.py` 없음) |
 | 실행: 실시간 추론 (inference) | 웹캠 실시간 인식 | 예정 (`predict.py` 없음) |
-| 시뮬 데모: Gazebo + 인식기 (Mac) | `../Mocap-Sim` 연동 데모 | 예정 (`publisher.py` 없음, Mocap-Sim 쪽 의존) |
+| 시뮬 데모: Gazebo + 인식기 (Mac) | `../Signal-Simulation` 연동 데모 | 예정 (`publisher.py` 없음, Signal-Simulation 쪽 의존) |
 
 같은 모듈을 터미널에서 직접 실행할 수도 있다: `.venv/bin/python -m <module>`
 (예: idle 라벨 수집 — `.venv/bin/python -m src.dataset.collect --label idle --idle`)

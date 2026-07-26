@@ -1,4 +1,4 @@
-# 수신호 기반 공정 기계 안내 시뮬레이터 (mocap-sample)
+# 수신호 기반 공정 기계 안내 시뮬레이터 (Signal-Vision)
 
 ## 프로젝트 개요
 
@@ -11,12 +11,12 @@ OpenCV와 MediaPipe를 이용한 모션/포즈 인식으로 **산업 현장 수�
 **→ 2026-07-07 end-to-end 실증 완료** (웹캠 → ROS 2 → Gazebo 기계 반응).
 
 **이 저장소의 범위는 수신호 인식(데이터 수집 → 학습 → 실시간 추론 → 결과 전달)까지.**
-ROS 2 / Gazebo 기계 제어는 별도 프로젝트 **`../Mocap-Sim`** 이 담당한다.
+ROS 2 / Gazebo 기계 제어는 별도 프로젝트 **`../Signal-Simulation`** 이 담당한다.
 
 ## 시스템 아키텍처 (실증된 구성)
 
 ```
-[Mocap-Sample — macOS/Windows]
+[Signal-Vision — macOS/Windows]
 카메라 입력 (OpenCV)
    ↓
 손+포즈 랜드마크 추출 (MediaPipe HandLandmarker + PoseLandmarker)
@@ -27,7 +27,7 @@ LSTM 분류 + 안정화 필터 (신뢰도 임계값 + 연속 일치)
    ↓
 rosbridge 웹소켓 전송              ← 이 저장소의 책임은 여기까지
    ↓
-[Mocap-Sim — Ubuntu VM(UTM) 또는 네이티브 Ubuntu]
+[Signal-Simulation — Ubuntu VM(UTM) 또는 네이티브 Ubuntu]
 ROS 2 토픽 /hand_signal → signal_listener 노드 → /cmd_vel → Gazebo 공정 기계
 ```
 
@@ -35,7 +35,7 @@ ROS 2 토픽 /hand_signal → signal_listener 노드 → /cmd_vel → Gazebo 공
   현재 UTM VM(arm64)에서 검증됨 — VM에서는 `LIBGL_ALWAYS_SOFTWARE=1`(CPU 렌더링) 필요.
   GPU 렌더링이 필요해지면(센서 시뮬레이션 등) 네이티브 Ubuntu + GPU로 이전.
 - Mac 단독 데모도 가능: Gazebo를 brew로 네이티브 설치 + UDP 어댑터
-  (`Mocap-Sim/tools/`, VSCode 태스크 "시뮬 데모").
+  (`../Signal-Simulation/tools/`, VSCode 태스크 "시뮬 데모").
 
 ## 기술 스택
 
@@ -50,7 +50,7 @@ ROS 2 토픽 /hand_signal → signal_listener 노드 → /cmd_vel → Gazebo 공
 ## 모듈 구성
 
 ```
-mocap-sample/
+Signal-Vision/
 ├── doc/                    # 문서 (AGENT.md, design.md, ml-flow.md)
 ├── asset/                  # 수집한 수신호 랜드마크 데이터셋 (.npy) — 라벨 폴더 = 클래스
 ├── models/                 # MediaPipe 모델(.task) + 학습된 분류 모델(sign_classifier.pt)
@@ -66,7 +66,7 @@ mocap-sample/
 2. ~~데이터 수집 도구~~ ✅ (자동 연속 수집 + 품질 필터 + 손 이탈 경고)
 3. ~~모델 학습~~ ✅ (자체 수집 6클래스, test 77.8% — 데이터 보강으로 개선 중)
 4. ~~실시간 추론~~ ✅ (안정화 필터 + 사람 미감지 안전 가드)
-5. ~~결과 전달~~ ✅ (rosbridge, Mocap-Sim과 연동 실증)
+5. ~~결과 전달~~ ✅ (rosbridge, Signal-Simulation과 연동 실증)
 
 **남은 작업 = 품질 루프**: 라벨당 100개 목표로 데이터 보강(`back` 추가, idle에
 손 안 보이는 변형 포함) → 재학습 → 실사용 오분류 관찰 → 반복 (doc/ml-flow.md 6절).
@@ -96,8 +96,8 @@ mocap-sample/
   단계에서 사전학습 용도로만 검토.
 - **안전 규칙 (계층별)**
   - 추론: 신뢰도 임계값 미만 or 미학습 동작 → "unknown" / 사람(포즈) 미감지 → 모델 판단 무시하고 "unknown"
-  - 기계(Mocap-Sim): unknown → 정지 / 하트비트 2초 끊김 → 무조건 정지 / idle → 직전 상태 유지
-- **분류 결과 전달 = rosbridge 웹소켓** — `src/inference/publisher.py`
+  - 기계(Signal-Simulation): unknown → 정지 / 하트비트 2초 끊김 → 무조건 정지 / idle → 직전 상태 유지
+- **분류 결과 전달 = rosbridge 웹소켓** — `src/inference/bridge.py`
   - 메시지: std_msgs/String에 JSON `{"signal": "stop", "confidence": 0.93, "timestamp": ...}`
   - 토픽 `/hand_signal`, 상태 변화 시 즉시 + 1초 주기 하트비트, 서버 없어도 추론 계속(자동 재접속)
   - 디버깅용 UDP 백엔드(`--publish udp`) — Mac 단독 데모의 어댑터가 이걸 수신
