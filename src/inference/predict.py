@@ -1,9 +1,9 @@
-# Last updated: 2026-07-16
+# Last updated: 2026-07-22
 
 '''
 실시간 수신호 추론
 
-최근 30프레임 랜드마크를 슬라이딩 윈도우로 유지하며 매 프레임 분류하고, 
+최근 30프레임 랜드마크를 슬라이딩 윈도우로 유지하며 매 프레임 분류하고,
 안정화 필터(신회도 임계값 + 연속 k회 동일 예측)을 통과한 신호만 확정.
 
 확정 신호가 없다면 '인식 불가' - 안전 기본 값 정지
@@ -26,6 +26,7 @@ from src.capture.extractor import (
     HAND_DIM,
     FeatureExtractor,
     HandWarning,
+    LensHealthMonitor,
     draw_detections,
     open_camera,
     process_frame,
@@ -63,12 +64,98 @@ def load_model(model_path: Path, device):
     return model, ckpt["labels"], cfg["frames"]
 
 
+class SignalStabilizer:
+    '''
+    모델 확률을 안정화 필터(임계값 + 연속 일치 + 히스테리시스)에 통과시켜 확정 신호를 관리한다.
+
+    "확정 상태"(confirmed/confirmed_idx)와 그걸 바꾸는 규칙 — 연속 N회 일치해야 확정,
+    낮은 confidence는 유예를 두고 해제하되(분진 등 일시적 하락에 기계가 서지 않게)
+    렌즈 블러가 실측으로 겹치면 유예 없이 즉시 해제 — 을 한 곳에 모아, main() 루프는
+    매 프레임 update()/mark_person_absent() 호출만 하면 되게 한다.
+    '''
+
+    def __init__(self, threshold: float, consecutive: int, ema: float, release_grace: float) -> None:
+        self.threshold = threshold
+        self.consecutive = consecutive
+        self.ema = ema
+        self.release_grace = release_grace
+
+        self.confirmed = "인식 불가"  # 화면/퍼블리시에 쓰는 현재 확정 신호 (라벨 문자열 또는 안전 기본값)
+        self.confirmed_idx: int | None = None  # confirmed에 대응하는 라벨 인덱스 (None = 확정 없음)
+        self.emergency = False  # 블러+인식저하가 겹쳐 즉시정지된 상태 (정상 신호 재확정 시 해제)
+        self.status = "버퍼 채우는 중..."
+        self.probs: np.ndarray | None = None  # 확률 EMA 상태 (HUD 패널·퍼블리시 confidence에 재사용)
+        self.top: int | None = None  # 현재 1위 클래스 인덱스
+
+        self._streak_label: int | None = None  # 직전까지 연속으로 임계값을 넘긴 클래스 인덱스
+        self._streak = 0  # streak_label이 연속으로 몇 번째 유지되고 있는지 (--consecutive와 비교)
+        self._low_conf_since: float | None = None  # 확정 해제 유예(히스테리시스) 타이머 시작 시각
+
+    def _reset_to_unknown(self, reason: str, emergency: bool) -> None:
+        self._streak_label, self._streak = None, 0
+        self._low_conf_since = None
+        if self.confirmed != "인식 불가":
+            self.confirmed = "인식 불가"
+            self.confirmed_idx = None
+            print(f"확정: 인식 불가 ({reason}) → 안전 기본값(정지)")
+        self.emergency = emergency
+
+    def mark_person_absent(self, is_blurred: bool) -> None:
+        '''윈도우 대부분에서 사람(포즈)이 안 잡힐 때 — 유예 없이 즉시 해제.
+
+        is_blurred가 True면 "사람이 없는 게 아니라 렌즈가 막혀서 아예 안 보이는"
+        경우일 수 있으므로 EMERGENCY로 표시한다(원인 구분은 정비 알림 목적).
+        '''
+        self.probs, self.top = None, None
+        self._reset_to_unknown("사람 미감지", emergency=is_blurred)
+        self.status = "사람 미감지"
+
+    def update(self, raw_probs: np.ndarray, labels: list[str], is_blurred: bool) -> None:
+        '''실제 예측 확률 하나로 안정화 필터를 한 스텝 진행한다.'''
+        self.probs = raw_probs if self.probs is None else \
+            self.ema * raw_probs + (1 - self.ema) * self.probs
+        self.top = int(self.probs.argmax())
+        conf = float(self.probs[self.top])
+        self.status = f"연속 일치 {min(self._streak, self.consecutive)}/{self.consecutive}"
+
+        # 안정화 필터: 임계값 + 연속 일치 (확정은 깐깐하게)
+        if conf >= self.threshold:
+            self._low_conf_since = None
+            self._streak = self._streak + 1 if self.top == self._streak_label else 1
+            self._streak_label = self.top
+            if self._streak >= self.consecutive and self.confirmed != labels[self.top]:
+                self.confirmed = labels[self.top]
+                self.confirmed_idx = self.top
+                self.emergency = False
+                print(f"확정: {self.confirmed}  (신뢰도 {conf:.2f})")
+        else:
+            # 해제는 유예를 두고 (히스테리시스) — 일시적 하락에 기계가 서지 않게.
+            # 단, 렌즈 블러가 실측으로 확인된 상태에서 인식까지 흔들리면 유예 없이 즉시 해제.
+            self._streak_label, self._streak = None, 0
+            now = time.monotonic()
+            if self.confirmed != "인식 불가":
+                if is_blurred:
+                    self._reset_to_unknown("렌즈 블러 + 인식 저하 [즉시]", emergency=True)
+                else:
+                    if self._low_conf_since is None:
+                        self._low_conf_since = now
+                    remain = self.release_grace - (now - self._low_conf_since)
+                    if remain > 0:
+                        self.status = f"신뢰 회복 대기 {remain:.1f}s (유지: {self.confirmed})"
+                    else:
+                        self._reset_to_unknown("유예 초과", emergency=False)
+
+
 def main() -> None:
     '''웹캠 → 특징 추출 → 슬라이딩 윈도우 추론 → 안정화 필터 → 퍼블리시 메인 루프.
 
     프레임마다 (1) 사람이 안 잡히면 즉시 "인식 불가"로 안전 기본값 처리,
     (2) 모델 확률을 EMA로 평활한 뒤 임계값+연속 일치를 만족해야만 신호를 확정,
-    (3) 확정 상태가 바뀌면 즉시 + 아니면 1초 하트비트로 계속 퍼블리시한다.
+    (3) 렌즈 블러(김서림 등)가 실측으로 확인되면서 인식까지 흔들리면 유예 없이 즉시 해제,
+    (4) 확정 상태가 바뀌면 즉시 + 아니면 1초 하트비트로 계속 퍼블리시한다.
+
+    상태 관리(확정/streak/유예/emergency)는 SignalStabilizer가 전담하고, 이 루프는
+    매 프레임 그 객체를 갱신하고 결과를 읽어 퍼블리시·HUD 렌더링만 한다.
     '''
     parser = argparse.ArgumentParser(description="실시간 수신호 추론")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH)
@@ -104,13 +191,9 @@ def main() -> None:
     last_sent: tuple[str, float] = ("", 0.0)  # (마지막 전송 신호, 전송 시각) — 하트비트 주기 판단용
 
     window: deque[np.ndarray] = deque(maxlen=num_frames)  # 최근 num_frames개 특징 벡터 (슬라이딩 윈도우)
-    streak_label: int | None = None  # 직전까지 연속으로 임계값을 넘긴 클래스 인덱스
-    streak = 0  # streak_label이 연속으로 몇 번째 유지되고 있는지 (--consecutive와 비교)
-    confirmed = "인식 불가"  # 화면/퍼블리시에 쓰는 현재 확정 신호 (라벨 문자열 또는 안전 기본값)
-    confirmed_idx: int | None = None  # confirmed에 대응하는 라벨 인덱스 (None = 확정 없음)
     warning = HandWarning()  # 손이 연속으로 안 잡히면 화면에 이탈 경고
-    smoothed: np.ndarray | None = None   # 확률 EMA 상태 (프레임 간 스파이크 완화, None=아직 초기화 전)
-    low_conf_since: float | None = None  # 확정 해제 유예(히스테리시스) 타이머 시작 시각, None=유예 중 아님
+    lens_monitor = LensHealthMonitor()  # 렌즈 블러(김서림·물방울·분진) 진단
+    stabilizer = SignalStabilizer(args.threshold, args.consecutive, args.ema, args.release_grace)
 
     while True:
         frame, hand_result, pose_result = process_frame(cap, extractor, t0)
@@ -120,92 +203,47 @@ def main() -> None:
         draw_detections(frame, hand_result, pose_result)
         warning.update(hand_result)
         warning.draw(frame)
+        is_blurred = lens_monitor.update(frame)
         window.append(FeatureExtractor.vector(hand_result, pose_result))
 
-        probs, top = None, None
-        status = "버퍼 채우는 중..."
         if len(window) == num_frames:
             arr = np.stack(window)
 
             # 안전 가드: 윈도우 대부분에서 사람(포즈)이 안 잡히면 모델 판단을 신뢰하지 않는다
             pose_ratio = float((arr[:, HAND_DIM * 2 :] != 0).any(axis=1).mean())
             if pose_ratio < 0.3:
-                streak_label, streak = None, 0
-                smoothed, low_conf_since = None, None  # 사람이 사라지면 평활·유예 상태도 초기화
-                if confirmed != "인식 불가":
-                    confirmed = "인식 불가"
-                    confirmed_idx = None
-                    print("확정: 인식 불가 (사람 미감지) → 안전 기본값(정지)")
-                now = time.monotonic()
-                if last_sent[0] != "unknown" or now - last_sent[1] >= 1.0:
-                    publisher.publish("unknown", 0.0)
-                    last_sent = ("unknown", now)
-                if hud.render(frame, labels, None, None, None, args.threshold,
-                              header="확정: 인식 불가", header_color=(80, 80, 255),
-                              status="사람 미감지", status_color=(80, 80, 255)):
-                    break
-                continue
-
-            # --- 실제 예측 한 번 ---
-            # arr: (num_frames=30, 150) — PyTorch 모델은 항상 "배치 축"을 기대하므로
-            # arr[None]으로 맨 앞에 배치 차원 1개를 추가해 (1, 30, 150)으로 만든다
-            # (한 번에 시퀀스 하나만 넣지만, 모델 입력 형태 규약은 지켜야 함).
-            # from_numpy: numpy 배열을 메모리 복사 없이 torch 텐서로 감싸고, .to(device)로
-            # 모델과 같은 장치(CPU/GPU)로 옮긴다 — 서로 다른 장치의 텐서끼리는 연산 불가.
-            x = torch.from_numpy(arr[None]).to(device)
-            with torch.no_grad():  
-                # 추론만 할 뿐 역전파 안 하므로 그래디언트 추적을 꺼서 메모리·속도 절약
-                # model(x): SignLSTM의 forward()가 실행되어 클래스별 "로짓"(정규화 안 된 점수)을
-                # (1, num_classes) 모양으로 반환. softmax(dim=1)으로 클래스 축을 따라 합이 1이
-                # 되는 확률로 변환하고(연속 확률 분포), [0]으로 배치 차원을 벗겨 (num_classes,)만 남긴다.
-                # .cpu().numpy(): GPU에 있었을 수도 있는 텐서를 CPU로 내리고 (numpy는 GPU 메모리를 다룰 줄 모름)
-                # numpy 배열로 바꾼 후 (EMA 평활, argmax 등)는 순수 numpy로 다룬다.
-                raw_probs = torch.softmax(model(x), dim=1)[0].cpu().numpy()
-            # 확률 EMA 평활: 1프레임 스파이크가 판단에 직접 튀지 않게
-            smoothed = raw_probs if smoothed is None else \
-                args.ema * raw_probs + (1 - args.ema) * smoothed
-            probs = smoothed
-            top = int(probs.argmax())
-            conf = float(probs[top])
-            status = f"연속 일치 {min(streak, args.consecutive)}/{args.consecutive}"
-
-            # 안정화 필터: 임계값 + 연속 일치 (확정은 깐깐하게)
-            if conf >= args.threshold:
-                low_conf_since = None
-                streak = streak + 1 if top == streak_label else 1
-                streak_label = top
-                if streak >= args.consecutive and confirmed != labels[top]:
-                    confirmed = labels[top]
-                    confirmed_idx = top
-                    print(f"확정: {confirmed}  (신뢰도 {conf:.2f})")
+                stabilizer.mark_person_absent(is_blurred)
             else:
-                # 해제는 유예를 두고 (히스테리시스) — 일시적 하락에 기계가 서지 않게.
-                # 사람 미감지 가드(위)는 이 유예와 무관하게 즉시 해제된다.
-                streak_label, streak = None, 0
-                now = time.monotonic()
-                if confirmed != "인식 불가":
-                    if low_conf_since is None:
-                        low_conf_since = now
-                    remain = args.release_grace - (now - low_conf_since)
-                    if remain > 0:
-                        status = f"신뢰 회복 대기 {remain:.1f}s (유지: {confirmed})"
-                    else:
-                        confirmed = "인식 불가"
-                        confirmed_idx = None
-                        low_conf_since = None
-                        print("확정: 인식 불가 (유예 초과) → 안전 기본값(정지)")
+                # --- 실제 예측 한 번 ---
+                # arr: (num_frames=30, 150) — PyTorch 모델은 항상 "배치 축"을 기대하므로
+                # arr[None]으로 맨 앞에 배치 차원 1개를 추가해 (1, 30, 150)으로 만든다
+                # (한 번에 시퀀스 하나만 넣지만, 모델 입력 형태 규약은 지켜야 함).
+                # from_numpy: numpy 배열을 메모리 복사 없이 torch 텐서로 감싸고, .to(device)로
+                # 모델과 같은 장치(CPU/GPU)로 옮긴다 — 서로 다른 장치의 텐서끼리는 연산 불가.
+                x = torch.from_numpy(arr[None]).to(device)
+                with torch.no_grad():
+                    # 추론만 할 뿐 역전파 안 하므로 그래디언트 추적을 꺼서 메모리·속도 절약
+                    # model(x): SignLSTM의 forward()가 실행되어 클래스별 "로짓"(정규화 안 된 점수)을
+                    # (1, num_classes) 모양으로 반환. softmax(dim=1)으로 클래스 축을 따라 합이 1이
+                    # 되는 확률로 변환하고(연속 확률 분포), [0]으로 배치 차원을 벗겨 (num_classes,)만 남긴다.
+                    # .cpu().numpy(): GPU에 있었을 수도 있는 텐서를 CPU로 내리고 (numpy는 GPU 메모리를 다룰 줄 모름)
+                    # numpy 배열로 바꾼 후 (EMA 평활, argmax 등)는 순수 numpy로 다룬다.
+                    raw_probs = torch.softmax(model(x), dim=1)[0].cpu().numpy()
+                stabilizer.update(raw_probs, labels, is_blurred)
 
         # 확정 상태 전송: 상태가 바뀌면 즉시, 같으면 1초 주기 하트비트
-        signal = labels[confirmed_idx] if confirmed_idx is not None else "unknown"
+        signal = labels[stabilizer.confirmed_idx] if stabilizer.confirmed_idx is not None else "unknown"
         now = time.monotonic()
         if signal != last_sent[0] or now - last_sent[1] >= 1.0:
-            conf_out = float(probs[confirmed_idx]) if (probs is not None and confirmed_idx is not None) else 0.0
+            conf_out = float(stabilizer.probs[stabilizer.confirmed_idx]) \
+                if (stabilizer.probs is not None and stabilizer.confirmed_idx is not None) else 0.0
             publisher.publish(signal, conf_out)
             last_sent = (signal, now)
 
-        header_color = (0, 220, 0) if confirmed_idx is not None else (80, 80, 255)
-        if hud.render(frame, labels, probs, top, confirmed_idx, args.threshold,
-                      header=f"확정: {confirmed}", header_color=header_color, status=status):
+        header_color = (0, 220, 0) if stabilizer.confirmed_idx is not None else (80, 80, 255)
+        if hud.render(frame, labels, stabilizer.probs, stabilizer.top, stabilizer.confirmed_idx, args.threshold,
+                      header=f"확정: {stabilizer.confirmed}", header_color=header_color, status=stabilizer.status,
+                      emergency=stabilizer.emergency):
             break
 
     cap.release()
@@ -216,4 +254,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

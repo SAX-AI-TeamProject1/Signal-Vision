@@ -67,3 +67,4 @@ VSCode에서는 `Cmd/Ctrl+Shift+B` (기본 빌드 태스크 "프로젝트 셋업
   - 웹캠을 쓰는 코드는 Docker에 넣지 않는다 (Windows/macOS Docker 모두 카메라 접근 불가).
 - **설계 결정** (`doc/design.md` 참고): 동적 수신호 30프레임 시퀀스, 특징은 양손+상체 포즈 150차원(`src/capture/extractor.py` — 수집·변환·추론이 모두 이 모듈을 사용해야 형식이 일치한다), 데이터는 `asset/<라벨>/*.npy` shape (30, 150). **클래스 목록은 하드코딩 금지** — `asset/`의 라벨 폴더에서 동적으로 구성하고 라벨 목록은 모델과 함께 저장·로드한다. 신뢰도가 낮으면 '정지'가 안전 기본값. 분류 결과 전달은 rosbridge 웹소켓(`src/inference/publisher.py`, 토픽 `/hand_signal`)로 결정됨.
 - 이 저장소의 문서와 주석은 한국어로 작성한다.
+ 

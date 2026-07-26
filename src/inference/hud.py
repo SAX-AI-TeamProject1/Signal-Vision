@@ -1,4 +1,4 @@
-# Last updated: 2026-07-14
+# Last updated: 2026-07-22
 
 """[역할] predict.py의 화면 표시(HUD) 전담 — 한글 오버레이 텍스트, 클래스별 확률 막대 패널,
 창 표시/키 입력을 여기서만 다룬다.
@@ -97,26 +97,33 @@ def draw_probability_panel(frame, labels, probs, top: int | None,
         texts.append((f"{p * 100:4.0f}%", (BAR_X + BAR_W + 10, y + 2), (230, 230, 230), 24))
     return texts
 
+def draw_emergency_toast(frame):
+    # 화면 상단에 빨간 EMERGENCY 배너를 그린다. 텍스트 항목을 반환.
+    h,w = frame.shape[:2]
+    banner_h = 60
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0,0), (w,banner_h), (0,0,220),-1)
+    cv2.addWeighted(overlay,0.75,frame,0.25,0.,frame)
+    return [("EMERGENCY",(w//2-100,12),(255,255,255),36)]
 
 class Hud:
-    """predict.py 메인 루프가 매 프레임 호출하는 렌더러.
+    '''predict.py 메인 루프가 매 프레임 호출하는 렌더러.
 
     폰트 로딩처럼 한 번만 준비하면 되는 상태를 인스턴스에 들고 있다가 render()에서 재사용한다.
-    """
+    '''
 
     def __init__(self) -> None:
         self._draw_text = make_text_drawer()
 
     def render(self, frame, labels, probs, top: int | None, confirmed_idx: int | None,
               threshold: float, header: str, header_color, status: str,
-              status_color=(200, 200, 200)) -> bool:
+              status_color=(200, 200, 200), emergency : bool = False) -> bool:
         """프레임에 확률 패널 + 헤더/상태 텍스트를 그려 창에 표시한다. 반환: 종료 요청 여부(q/ESC)."""
         panel_texts = draw_probability_panel(frame, labels, probs, top, confirmed_idx, threshold)
-        frame = self._draw_text(frame, [
-            (header, (10, 10), header_color, 40),
-            (status, (10, 62), status_color, 24),
-            *panel_texts,
-        ])
+        texts = [(header,(10,10),header_color,40),(status,(10,62),status_color,24),*panel_texts]
+        if emergency:
+            texts += draw_emergency_toast(frame)
+        frame = self._draw_text(frame,texts)
         cv2.imshow(WINDOW, frame)
         key = cv2.waitKey(1) & 0xFF
         return key in (ord("q"), 27)  # 27 = ESC

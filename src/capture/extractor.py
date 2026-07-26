@@ -1,4 +1,4 @@
-# Last updated: 2026-07-16
+# Last updated: 2026-07-22
 
 """공용 특징 추출기: 양손 랜드마크 + 상체 포즈 → 고정 크기 벡터.
 
@@ -64,6 +64,7 @@ HAND_DIM = LANDMARKS_PER_HAND * 3  # 21관절 × xyz = 63
 UPPER_BODY_JOINTS = [11, 12, 13, 14, 15, 16, 23, 24]  # 어깨/팔꿈치/손목/골반
 POSE_DIM = len(UPPER_BODY_JOINTS) * 3  # 8관절 × xyz = 24
 FEATURE_DIM = HAND_DIM * 2 + POSE_DIM  # 왼손 63 + 오른손 63 + 포즈 24 = 150
+
 
 
 def _ensure_model(path: Path, url: str, label: str) -> Path:
@@ -244,6 +245,10 @@ def open_camera(index: int = 0) -> cv2.VideoCapture:
 # 손 이탈 경고: 연속 미감지가 이 프레임 수를 넘으면 화면을 빨갛게 깜빡인다
 WARN_AFTER_MISSES = 5
 
+BLUR_CALIBRATION_FRAMES = 30    # 시작 후 이 프레임 수 동안 "정상 화질" 기준치를 캘리브레이션(보간)
+BLUR_RATIO_DROP = 0.5           # 기준치 대비 이 비율 밑으로 떨어지면 블러(김서림 등)로 판정
+BLUR_HIGH_FREO_FRAC = 0.5       # 화면 반경 중 바깥쪽 몇 %를 "고주파(잔 디테일)"로 볼지
+
 
 # 학습 데이터 수집 중 손이 프레임 밖으로 나가면 그 구간은 0으로 채워진 저품질 샘플이 되므로,
 # 수집자가 바로 알아챌 수 있도록 화면에 강한 시각 경고를 준다.
@@ -273,8 +278,49 @@ class HandWarning:
             # 즉 빨간 오버레이 30% + 원본 프레임 70%를 섞어 "반투명하게 붉게 물든" 효과를 낸다
             cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, frame)
         cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), 16)  # 두꺼운 빨간 테두리
-        # 흰색 두꺼운 글씨 위에 빨간 얇은 글씨를 겹쳐 그려 어떤 배경에서도 잘 보이게 함
+
         cv2.putText(frame, "!! HAND OUT OF FRAME !!", (w // 2 - 260, h // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 4)
+        
         cv2.putText(frame, "!! HAND OUT OF FRAME !!", (w // 2 - 260, h // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
+
+
+def _sharpness_score(gray: np.ndarray) -> float:
+    '''
+    그레이스케일 프레임의 선명도를 라플라시안(2차 미분) 분산으로 측정한다.
+
+    라플라시안은 엣지(밝기가 급변하는 지점)에서 값이 크고, 평탄한 영역에서는 0에
+    가깝다. 블러(디포커스·김서림)는 엣지를 뭉개므로 이 분산이 함께 떨어진다.
+    FFT 비율과 달리 화면 전체 밝기(저주파) 성분이 계산에 섞여 들어가지 않아
+    선명/블러 구분력이 훨씬 높다.
+    '''
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+
+class LensHealthMonitor:
+    '''
+    카메라 프레임의 고주파 성분 추이 (렌즈 블러 현상 진단)
+
+    시작 후 BLUR_CALIBRAION_FRAMES 동안 관측된 값의 중앙값을 사용되는 카메라,조명의 정상 기준치로 잡는다. 
+    이후 EMA로 평활한 비율이 기준치 대비 크게 떨어지면 블러 상태로 판정한다.
+    '''
+
+    def __init__(self)->None:
+        self._baseline:float|None=None
+        self._samples : list[float] = []
+        self.ratio_ema : float | None = None
+
+    def update(self,frame:np.ndarray) -> bool:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        ratio = _sharpness_score(gray)
+        self.ratio_ema = ratio if self.ratio_ema is None else 0.2* ratio + 0.8 *self.ratio_ema
+
+        if self._baseline is None:
+            self._samples.append(self.ratio_ema)
+            if len(self._samples) >= BLUR_CALIBRATION_FRAMES:
+                self._baseline = float(np.median(self._samples))
+            return False 
+
+        return self.ratio_ema < self._baseline * BLUR_RATIO_DROP

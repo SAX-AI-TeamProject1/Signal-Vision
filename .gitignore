@@ -224,3 +224,5 @@ models/*.task
 
 CLAUDE.md
 TODO.md
+
+*.DS_Store
