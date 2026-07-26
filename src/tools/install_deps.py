@@ -7,7 +7,7 @@ from pathlib import Path
 
 from task_output import banner, step
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def main() -> int:

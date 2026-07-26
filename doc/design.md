@@ -97,7 +97,7 @@ Signal-Vision/
 - **안전 규칙 (계층별)**
   - 추론: 신뢰도 임계값 미만 or 미학습 동작 → "unknown" / 사람(포즈) 미감지 → 모델 판단 무시하고 "unknown"
   - 기계(Signal-Simulation): unknown → 정지 / 하트비트 2초 끊김 → 무조건 정지 / idle → 직전 상태 유지
-- **분류 결과 전달 = rosbridge 웹소켓** — `src/inference/bridge.py`
+- **분류 결과 전달 = rosbridge 웹소켓** — `src/inference/publish.py`
   - 메시지: std_msgs/String에 JSON `{"signal": "stop", "confidence": 0.93, "timestamp": ...}`
   - 토픽 `/hand_signal`, 상태 변화 시 즉시 + 1초 주기 하트비트, 서버 없어도 추론 계속(자동 재접속)
   - 디버깅용 UDP 백엔드(`--publish udp`) — Mac 단독 데모의 어댑터가 이걸 수신

@@ -16,7 +16,7 @@ OpenCV와 MediaPipe 기반 **산업 현장 수신호(hand signal) 인식** 프�
 버전을 임의로 올리거나 범위를 풀지 말 것. 프로젝트 루트에 `.venv` 가상환경을 만들고 그 안에 설치한다:
 
 ```bash
-# macOS
+# macOS / Linux
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -e .
 
@@ -60,11 +60,11 @@ VSCode에서는 `Cmd/Ctrl+Shift+B` (기본 빌드 태스크 "프로젝트 셋업
 ## 주요 제약 사항
 
 - **범위:** ROS 2 / Gazebo 관련 코드는 이 저장소에 추가하지 않는다. 분류 결과를 외부로 전달하는 인터페이스(예: 소켓, rosbridge 클라이언트 등 — 방식 미정)까지만 이 저장소의 몫이다.
-- **Windows와 macOS 양쪽에서 동일하게 동작해야 한다:**
+- **Windows, macOS, Linux 세 플랫폼에서 동일하게 동작해야 한다:**
   - 경로는 항상 `pathlib.Path`로 다루고, 경로 문자열 하드코딩(`/` 또는 `\` 구분자, 절대 경로) 금지.
-  - 카메라는 `cv2.VideoCapture(index)` 기본 백엔드를 사용하되, OS별 백엔드 지정이 필요하면 `platform` 분기로 처리 (Windows: `CAP_DSHOW`/`CAP_MSMF`, macOS: `CAP_AVFOUNDATION`).
+  - 카메라는 `cv2.VideoCapture(index)` 기본 백엔드를 사용하되, OS별 백엔드 지정이 필요하면 `platform` 분기로 처리 (Windows: `CAP_DSHOW`/`CAP_MSMF`, macOS: `CAP_AVFOUNDATION`, Linux: 기본 백엔드가 이미 V4L2라 별도 분기 불필요 — `src/capture/extractor.py`의 `open_camera` `else` 분기 참고).
   - 셸 스크립트(.sh/.bat) 대신 Python 스크립트로 도구를 작성해 OS 의존을 없앤다.
-  - 웹캠을 쓰는 코드는 Docker에 넣지 않는다 (Windows/macOS Docker 모두 카메라 접근 불가).
-- **설계 결정** (`doc/design.md` 참고): 동적 수신호 30프레임 시퀀스, 특징은 양손+상체 포즈 150차원(`src/capture/extractor.py` — 수집·변환·추론이 모두 이 모듈을 사용해야 형식이 일치한다), 데이터는 `asset/<라벨>/*.npy` shape (30, 150). **클래스 목록은 하드코딩 금지** — `asset/`의 라벨 폴더에서 동적으로 구성하고 라벨 목록은 모델과 함께 저장·로드한다. 신뢰도가 낮으면 '정지'가 안전 기본값. 분류 결과 전달은 rosbridge 웹소켓(`src/inference/publisher.py`, 토픽 `/hand_signal`)로 결정됨.
+  - 웹캠을 쓰는 코드는 Docker에 넣지 않는다 (Windows/macOS는 Docker에서 카메라 접근 자체가 불가하고, Linux는 `--device=/dev/video0`로 가능은 하지만 플랫폼 간 동작 일관성을 위해 마찬가지로 넣지 않는다).
+- **설계 결정** (`doc/design.md` 참고): 동적 수신호 30프레임 시퀀스, 특징은 양손+상체 포즈 150차원(`src/capture/extractor.py` — 수집·변환·추론이 모두 이 모듈을 사용해야 형식이 일치한다), 데이터는 `asset/<라벨>/*.npy` shape (30, 150). **클래스 목록은 하드코딩 금지** — `asset/`의 라벨 폴더에서 동적으로 구성하고 라벨 목록은 모델과 함께 저장·로드한다. 신뢰도가 낮으면 '정지'가 안전 기본값. 분류 결과 전달은 rosbridge 웹소켓(`src/inference/publish.py`, 토픽 `/hand_signal`)로 결정됨.
 - 이 저장소의 문서와 주석은 한국어로 작성한다.
  

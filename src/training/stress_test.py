@@ -1,5 +1,7 @@
-# Last updated: 2026-07-14
-"""악조건 스트레스 테스트: 조건별로 test 셋을 오염시켜 모델 강건성을 측정한다.
+# Last updated: 2026-07-27
+'''
+stress_test.py
+악조건 스트레스 테스트: 조건별로 test 셋을 오염시켜 모델 강건성을 측정한다.
 
 학습과 동일한 분할(seed 42)의 test 셋에 augment.py의 변형을 조건별로 강제
 적용(p=1)하고 정확도 하락을 비교한다. 무작위 변형이므로 여러 번 반복한 평균을 본다.
@@ -9,7 +11,7 @@
 주의: 여기서 측정하는 것은 "좌표가 오염됐을 때 분류기의 강건성"이다.
 저조도·연기가 MediaPipe 추출 자체를 실패시키는 효과는 실측(불 끄기, 가림 등)으로
 확인해야 한다 — 그 경우는 안전 가드(인식 불가 → 정지)가 담당한다.
-"""
+'''
 
 import argparse # 커맨드라인 인자(--model, --repeats 등) 파싱
 
@@ -42,13 +44,13 @@ ALL_KEYS = ["P_NOISE", "P_HAND_DROPOUT", "P_TIME_WARP", "P_TRANSLATE", "P_SCALE"
  
 
 def main() -> None:
-    """저장된 모델을 로드해 조건별(노이즈/손 소실/시간 신축/이동·스케일/렌즈 왜곡)로
+    '''저장된 모델을 로드해 조건별(노이즈/손 소실/시간 신축/이동·스케일/렌즈 왜곡)로
     test 셋을 오염시키고, 깨끗한 test 셋 대비 정확도가 얼마나 떨어지는지 출력한다.
 
     핵심 트릭: augment.py의 P_*/강도 상수를 모듈 속성(setattr/getattr)으로 직접
     덮어써서 "이 조건만 100% 확률로 강제 적용"하게 만든 뒤, 측정이 끝나면 원래 값으로
     되돌린다 — train.py를 건드리지 않고도 augment_batch()의 동작을 조건별로 바꿔볼 수 있다.
-    """
+    '''
     parser = argparse.ArgumentParser(description="악조건 스트레스 테스트")
     parser.add_argument("--model", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
@@ -75,7 +77,6 @@ def main() -> None:
     zeros = {k: 0.0 for k in ALL_KEYS if k.startswith("P_")}  # 이번 조건 외 나머지 변형은 확률 0으로 꺼둠
 
     print(f"{'조건':<24} 정확도")
-    print("-" * 34)
     baseline = None
     for name, overrides in CONDITIONS.items():
         if overrides is None:

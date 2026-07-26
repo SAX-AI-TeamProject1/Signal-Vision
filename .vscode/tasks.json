@@ -20,15 +20,15 @@
             "type": "shell",
             "osx": {
                 "command": "python3",
-                "args": ["scripts/setup_venv.py"]
+                "args": ["${workspaceFolder}/src/tools/setup_venv.py"]
             },
             "linux": {
                 "command": "python3",
-                "args": ["scripts/setup_venv.py"]
+                "args": ["${workspaceFolder}/src/tools/setup_venv.py"]
             },
             "windows": {
                 "command": "py",
-                "args": ["scripts/setup_venv.py"]
+                "args": ["${workspaceFolder}/src/tools/setup_venv.py"]
             },
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -44,15 +44,15 @@
             "type": "shell",
             "osx": {
                 "command": "${workspaceFolder}/.venv/bin/python",
-                "args": ["scripts/install_deps.py"]
+                "args": ["${workspaceFolder}/src/tools/install_deps.py"]
             },
             "linux": {
                 "command": "${workspaceFolder}/.venv/bin/python",
-                "args": ["scripts/install_deps.py"]
+                "args": ["${workspaceFolder}/src/tools/install_deps.py"]
             },
             "windows": {
                 "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-                "args": ["scripts/install_deps.py"]
+                "args": ["${workspaceFolder}/src/tools/install_deps.py"]
             },
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -69,19 +69,19 @@
             "osx": {
                 "command": "${workspaceFolder}/.venv/bin/python",
                 "args": [
-                    "scripts/check_env.py"
+                    "${workspaceFolder}/src/tools/check_env.py"
                 ]
             },
             "linux": {
                 "command": "${workspaceFolder}/.venv/bin/python",
                 "args": [
-                    "scripts/check_env.py"
+                    "${workspaceFolder}/src/tools/check_env.py"
                 ]
             },
             "windows": {
                 "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
                 "args": [
-                    "scripts/check_env.py"
+                    "${workspaceFolder}/src/tools/check_env.py"
                 ]
             },
             "options": {
@@ -279,6 +279,13 @@
                     "${workspaceFolder}/../Signal-Simulation/tools/run_demo_mac.py"
                 ]
             },
+            "linux": {
+                "command": "echo",
+                "args": ["'이 태스크는 macOS 전용입니다 (Linux는 Signal-Simulation 쪽 데모 스크립트 준비 후 별도 태스크로 추가 예정)'"]
+            },
+            "windows": {
+                "command": "Write-Host 'macOS 전용 태스크입니다 - Windows에서는 지원하지 않음'"
+            },
             "options": {
                 "cwd": "${workspaceFolder}"
             },
@@ -292,15 +299,16 @@
             "label": "날짜 헤더 자동 감시 (.py 저장 시)",
             "type": "shell",
             "osx": {
-                "command": "${workspaceFolder}/scripts/watch_py_saves.sh",
-                "args": ["${workspaceFolder}"]
+                "command": "python3",
+                "args": ["${workspaceFolder}/src/tools/watch_py_saves.py", "${workspaceFolder}"]
             },
             "linux": {
-                "command": "${workspaceFolder}/scripts/watch_py_saves.sh",
-                "args": ["${workspaceFolder}"]
+                "command": "python3",
+                "args": ["${workspaceFolder}/src/tools/watch_py_saves.py", "${workspaceFolder}"]
             },
             "windows": {
-                "command": "Write-Host 'Watching (Windows에서는 지원하지 않음 - fswatch 필요, macOS/Linux 전용이라 건너뜀)'"
+                "command": "py",
+                "args": ["${workspaceFolder}/src/tools/watch_py_saves.py", "${workspaceFolder}"]
             },
             "isBackground": true,
             "presentation": {

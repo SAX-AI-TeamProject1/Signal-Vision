@@ -1,5 +1,7 @@
-# Last updated: 2026-07-14
+# Last updated: 2026-07-27
 '''
+augment.py
+
 학습용 특징 수준 도메인 랜덤화.
 
 악조건(저조도, 센서 노이즈, 연기·가림, 렌즈 왜곡, 위치·속도 변화)이 랜드마크
@@ -39,13 +41,13 @@ DROPOUT_FRAMES = (1, 6)   # 손을 지울 프레임 개수 범위 [최소, 최�
 
 
 def _time_warp(seq: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """재생 속도를 바꿨다가 원래 길이(T)로 다시 리샘플링한다.
-
+    '''재생 속도를 바꿨다가 원래 길이(T)로 다시 리샘플링한다.
+    
     예를 들어 factor=1.25면 "1.25배 빠르게 재생한 동작"의 프레임 위치를 원래 T개
     타임스텝에 맞춰 다시 뽑아내는 것과 같다. 실제로 프레임을 늘리거나 줄이지 않고,
     "몇 번째 원본 프레임에서 값을 가져올지"를 소수점 위치(src)로 계산한 뒤, 그 사이의
     두 정수 프레임(lo, hi)을 선형 보간(가중치 w)으로 섞어서 매끄러운 값을 만든다.
-    """
+    '''
     t = len(seq)
     factor = rng.uniform(*WARP_RANGE)
     # src: 0 ~ (t-1)*factor 구간을 t개로 균등 분할한 뒤, 시퀀스 길이를 벗어나지 않게 clip
@@ -57,11 +59,11 @@ def _time_warp(seq: np.ndarray, rng: np.random.Generator) -> np.ndarray:
 
 
 def augment_sequence(seq: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """시퀀스 1개 (T, 150)에 무작위 악조건 변형을 순서대로 적용한다.
+    '''시퀀스 1개 (T, 150)에 무작위 악조건 변형을 순서대로 적용한다.
 
     각 변형은 독립적으로 "적용할지(P_*)"를 굴리고, 적용되면 존재하는(present) 지점만
     바꾼다 — 미검출(0)인 지점은 여전히 "감지 안 됨"으로 남아야 하기 때문이다.
-    """
+    '''
     seq = seq.copy()  # 원본 배치(X_train)는 절대 건드리지 않도록 사본에만 변형
 
     # 시간 신축은 프레임 배치 자체를 다시 뽑는 연산이라, 아래의 포인트 단위 변형들보다

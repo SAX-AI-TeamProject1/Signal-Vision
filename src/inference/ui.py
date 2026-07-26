@@ -1,18 +1,8 @@
-# Last updated: 2026-07-22
+# Last updated: 2026-07-27
 
-"""[역할] predict.py의 화면 표시(HUD) 전담 — 한글 오버레이 텍스트, 클래스별 확률 막대 패널,
-창 표시/키 입력을 여기서만 다룬다.
-
-predict.py는 모델 추론·안정화 필터·안전 가드·결과 퍼블리시 같은 예측 로직만 담당하고,
-"화면에 무엇을 그릴지"는 이 모듈에 위임한다 — 안전이 걸린 판단 로직이 그리기 코드에 섞여
-가독성이 떨어지는 것을 막기 위함이다 (extractor.py가 FeatureExtractor(핵심)와
-draw_*(표시)를 나눠둔 것과 같은 맥락).
-
-사용법 (predict.py 쪽):
-    hud = Hud()
-    quit_requested = hud.render(frame, labels, probs, top, confirmed_idx, threshold,
-                                header="확정: 정지", header_color=(0, 220, 0), status="...")
-"""
+'''
+predict.py의 화면 표시(HUD) 전담 — 한글 오버레이 텍스트, 클래스별 확률 막대 패널, 창 표시/키 입력을 다룬다.
+'''
 
 import platform
 from pathlib import Path
@@ -41,11 +31,11 @@ def find_font() -> str | None:
 
 
 def make_text_drawer():
-    """한글 텍스트 렌더러를 반환한다. 여러 텍스트를 한 번의 변환으로 그린다.
+    '''한글 텍스트 렌더러를 반환한다. 여러 텍스트를 한 번의 변환으로 그린다.
 
     draw(frame, items) — items: [(text, (x, y), BGR색, 크기), ...]
     폰트가 없으면 cv2 기본(영문 대체)으로 폴백.
-    """
+    '''
     font_path = find_font()
     if font_path is None:
         def draw(frame, items):
@@ -71,7 +61,7 @@ def make_text_drawer():
 
 def draw_probability_panel(frame, labels, probs, top: int | None,
                            confirmed_idx: int | None, threshold: float):
-    """클래스별 확률 막대 패널을 그린다. 텍스트 항목 목록을 반환한다 (draw_text용)."""
+    '''클래스별 확률 막대 패널을 그린다. 텍스트 항목 목록을 반환한다 (draw_text용).'''
     panel_h = len(labels) * (BAR_H + BAR_GAP) + BAR_GAP
     x0, y0 = 10, BAR_TOP - BAR_GAP
     x1, y1 = BAR_X + BAR_W + 70, BAR_TOP + panel_h - BAR_GAP
