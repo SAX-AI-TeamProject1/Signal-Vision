@@ -171,12 +171,12 @@ class FeatureExtractor:
         self.hands.close()
         self.pose.close()
 
-'''학습/추론 로직과는 무관한 디버그·수집용 시각화/카메라 도우미.
-landmark_viewer.py(검증 뷰어)와 dataset/collect.py(수집 UI)가 공용으로 가져다 쓴다.
-MediaPipe 좌표는 0~1 정규화 값이므로, 가로/세로 픽셀 크기(w, h)를 곱해 화면 좌표로 환산한다.
-'''
 # 포즈랜드마크
 def draw_pose(frame, pose_result) -> None:
+    '''학습/추론 로직과는 무관한 디버그·수집용 시각화/카메라 도우미.
+    landmark_viewer.py(검증 뷰어)와 dataset/collect.py(수집 UI)가 공용으로 가져다 쓴다.
+    MediaPipe 좌표는 0~1 정규화 값이므로, 가로/세로 픽셀 크기(w, h)를 곱해 화면 좌표로 환산한다.
+    '''
     if not pose_result.pose_landmarks:  # 사람이 검출 안 되면 그릴 것이 없으므로 그대로 반환
         return
     lms = pose_result.pose_landmarks[0]

@@ -37,7 +37,7 @@ class ConsolePublisher:
 
 
 class UdpPublisher:
-    """JSON을 UDP로 송신한다 (의존성·서버 불필요 — 로컬 디버깅용 백엔드)."""
+    '''JSON을 UDP로 송신한다 (의존성·서버 불필요 — 로컬 디버깅용 백엔드).'''
 
     def __init__(self, host: str = "127.0.0.1", port: int = 5555) -> None:
         self.addr = (host, port)
@@ -56,11 +56,11 @@ class UdpPublisher:
 
 
 class RosbridgePublisher:
-    """rosbridge 웹소켓으로 ROS 2 토픽(std_msgs/String)을 발행한다.
+    '''rosbridge 웹소켓으로 ROS 2 토픽(std_msgs/String)을 발행한다.
 
     서버가 없거나 끊겨도 추론을 막지 않는다 — 전송 실패는 경고만 남기고
     5초 간격으로 재접속을 시도한다.
-    """
+    '''
 
     RECONNECT_COOLDOWN = 5.0  # 연결 끊김/실패 후 재시도까지 대기하는 최소 간격(초) — 매 프레임 재시도해 추론 루프를 막지 않기 위함
 
