@@ -1,5 +1,8 @@
-# Last updated: 2026-07-14
-"""수신호 분류 모델 학습 스크립트 (doc/ml-flow.md 4단계).
+# Last updated: 2026-07-27
+'''
+train.py
+
+수신호 분류 모델 학습 스크립트
 
 asset/의 라벨 폴더를 스캔해 클래스를 동적으로 구성하고 (하드코딩 금지),
 LSTM 시퀀스 분류 모델을 학습한 뒤 라벨 목록과 함께 저장한다.
@@ -10,7 +13,7 @@ LSTM 시퀀스 분류 모델을 학습한 뒤 라벨 목록과 함께 저장한�
 플로우:
     데이터 로드 → 층화 분할(70/15/15) → LSTM 학습 (early stopping)
     → test 평가 (혼동 행렬 포함) → models/sign_classifier.pt 저장 (라벨 목록 포함)
-"""
+'''
 
 import argparse # 커맨드라인 인자(--epochs, --hidden 등) 파싱
 from pathlib import Path # OS 무관 경로 처리 (Windows/macOS 공용, design.md 규약)
@@ -70,12 +73,12 @@ class SignLSTM(nn.Module):
 
 
 def load_dataset(data_dir: Path) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """asset/<라벨>/*.npy 를 스캔해 (X, y, 라벨목록)을 반환한다.
+    '''asset/<라벨>/*.npy 를 스캔해 (X, y, 라벨목록)을 반환한다.
 
     라벨은 코드에 하드코딩하지 않고 폴더 이름을 정렬(sorted)해서 그대로 클래스 목록으로
     쓴다 — 이 순서가 y의 클래스 인덱스이자, 나중에 체크포인트에 저장되어 predict.py가
     그대로 읽어 쓰는 순서다 (라벨 목록이 어긋나면 클래스 인덱스가 뒤바뀌어버린다).
-    """
+    '''
     labels = sorted(d.name for d in data_dir.iterdir() if d.is_dir() and list(d.glob("*.npy")))
     if len(labels) < 2:
         raise SystemExit(f"클래스가 2개 이상 필요합니다. 현재: {labels} ({data_dir})")
@@ -94,13 +97,13 @@ def load_dataset(data_dir: Path) -> tuple[np.ndarray, np.ndarray, list[str]]:
 
 
 def split_dataset(X, y):
-    """train 70 / val 15 / test 15 층화 분할.
+    '''train 70 / val 15 / test 15 층화 분할.
 
     stratify=y로 각 분할에 클래스 비율이 원본과 동일하게 유지되도록 한다 — 그렇지 않으면
     운 나쁘게 val/test에 특정 라벨이 거의 없거나 몰려서 평가가 왜곡될 수 있다.
     random_state=42로 고정해, 같은 데이터로 다시 실행해도 항상 같은 분할이 나오게 한다
     (stress_test.py가 같은 test 셋을 다시 얻어 비교하려면 이 시드가 반드시 같아야 한다).
-    """
+    '''
     X_train, X_tmp, y_train, y_tmp = train_test_split(
         X, y, test_size=0.3, stratify=y, random_state=42
     )
@@ -109,9 +112,10 @@ def split_dataset(X, y):
     )
     return X_train, y_train, X_val, y_val, X_test, y_test
 
+    
 
 def evaluate(model, X, y, device) -> tuple[float, np.ndarray]:
-    """정확도와 예측값을 반환한다 (val/test 평가, stress_test.py도 재사용)."""
+    '''정확도와 예측값을 반환한다 (val/test 평가, stress_test.py도 재사용).'''
     model.eval()  # 드롭아웃 등 학습 전용 동작을 끄고 항상 같은 출력이 나오게 고정
     with torch.no_grad():  # 평가는 역전파가 필요 없으므로 그래디언트 추적을 꺼서 메모리·속도 절약
         logits = model(torch.from_numpy(X).to(device))
@@ -120,12 +124,12 @@ def evaluate(model, X, y, device) -> tuple[float, np.ndarray]:
 
 
 def main() -> None:
-    """데이터 로드 → 층화 분할 → LSTM 학습(early stopping) → test 평가 → 모델 저장.
+    '''데이터 로드 → 층화 분할 → LSTM 학습(early stopping) → test 평가 → 모델 저장.
 
     val 정확도가 --patience epoch 동안 개선되지 않으면 조기 종료하고, 학습 중 가장
     좋았던 시점의 가중치(best_state)를 최종 모델로 채택한다 — 마지막 epoch이 아니라
     "가장 잘한 시점"을 저장해야 과적합된 뒷부분 epoch을 피할 수 있다.
-    """
+    '''
     parser = argparse.ArgumentParser(description="수신호 분류 모델 학습")
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--model-out", type=Path, default=DEFAULT_MODEL_PATH)

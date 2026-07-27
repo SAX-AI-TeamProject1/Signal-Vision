@@ -1,4 +1,4 @@
-# Last updated: 2026-07-22
+# Last updated: 2026-07-27
 
 '''
 실시간 수신호 추론
@@ -31,8 +31,8 @@ from src.capture.extractor import (
     open_camera,
     process_frame,
 )
-from src.inference.hud import Hud # 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
-from src.inference.bridge import make_publisher
+from src.inference.ui import Hud # 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
+from src.inference.publish import make_publisher
 from src.training.train import SignLSTM
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -222,7 +222,7 @@ def main() -> None:
                 # 모델과 같은 장치(CPU/GPU)로 옮긴다 — 서로 다른 장치의 텐서끼리는 연산 불가.
                 x = torch.from_numpy(arr[None]).to(device)
                 with torch.no_grad():
-                    # 추론만 할 뿐 역전파 안 하므로 그래디언트 추적을 꺼서 메모리·속도 절약
+                    # 추론만 할 뿐 역전파는 안 하므로 그래디언트 추적을 꺼서 메모리·속도 절약
                     # model(x): SignLSTM의 forward()가 실행되어 클래스별 "로짓"(정규화 안 된 점수)을
                     # (1, num_classes) 모양으로 반환. softmax(dim=1)으로 클래스 축을 따라 합이 1이
                     # 되는 확률로 변환하고(연속 확률 분포), [0]으로 배치 차원을 벗겨 (num_classes,)만 남긴다.

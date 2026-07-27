@@ -6,7 +6,7 @@ MARKER = "# Last updated:"
 
 
 def resolve_file_path():
-    # CLI usage: update_date_header.py <file_path>  (used by scripts/watch_py_saves.sh)
+    # CLI usage: update_date_header.py <file_path>  (used by tools/watch_py_saves.py)
     if len(sys.argv) > 1:
         return sys.argv[1]
     # Stdin usage: JSON with {"tool_input": {"file_path": ...}} on stdin

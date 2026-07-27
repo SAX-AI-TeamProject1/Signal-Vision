@@ -1,43 +1,26 @@
-# Last updated: 2026-07-13
+# Last updated: 2026-07-27
 
-"""[역할] 웹캠 영상에서 MediaPipe HandLandmarker(손) + PoseLandmarker(상체 포즈) 랜드마크를
-실시간으로 함께 그려 보여주는 검증용 스크립트. 카메라 → 손+포즈 랜드마크 추출 파이프라인이
-정상 동작하는지 눈으로 확인하는 용도이며, 그 자체로 학습이나 예측을 하지는 않는다.
+'''
+    [역할] 
+    웹캠 영상에서 MediaPipe HandLandmarker(손) + PoseLandmarker(상체 포즈) 랜드마크를
+    실시간으로 함께 그려 보여주는 검증용 스크립트. 카메라 → 손+포즈 랜드마크 추출 파이프라인이
+    정상 동작하는지확인하는 용도.
 
-실행: F5 또는 VSCode 태스크 "실행: 랜드마크 시각화" (종료: q 또는 ESC)
+    [사용 라이브러리와 이유]
+    - OpenCV(cv2): 카메라 입력·프레임 표시/그리기. OS 간 웹캠 접근을 통일해 주는 사실상 표준 라이브러리.
+    - MediaPipe: 구글이 만든, 이미지/영상에서 사람의 손·몸·얼굴 등을 인식하는 미리 학습된(pretrained)
+    ML 모델 + 실행 파이프라인 모음. "카메라 프레임 → 관절 좌표" 변환을 직접 딥러닝 모델을 만들어
+    학습시키지 않고도 라이브러리 호출 몇 줄로 끝낼 수 있게 해준다.
 
-[손 + 포즈를 같이 보는 이유] 실제 수신호 인식은 손(왼손 63 + 오른손 63) + 상체 포즈(24) =
-150차원 특징을 함께 쓴다(src/capture/extractor.py의 FeatureExtractor, 설계 근거는
-doc/design.md 참고). 이 뷰어도 같은 두 랜드마커를 그대로 써서, 실제 특징 추출이 보는 것과
-동일한 화면을 검증 단계에서 확인할 수 있게 한다.
-
-[사용 라이브러리와 이유]
-- OpenCV(cv2): 카메라 입력·프레임 표시/그리기. OS 간 웹캠 접근을 통일해 주는 사실상 표준 라이브러리.
-- MediaPipe: 구글이 만든, 이미지/영상에서 사람의 손·몸·얼굴 등을 인식하는 미리 학습된(pretrained)
-  ML 모델 + 실행 파이프라인 모음. "카메라 프레임 → 관절 좌표" 변환을 직접 딥러닝 모델을 만들어
-  학습시키지 않고도 라이브러리 호출 몇 줄로 끝낼 수 있게 해준다. Tasks API(HandLandmarker +
-  PoseLandmarker)를 써서 손 21관절 + 상체 8관절(x, y, z) 랜드마크를 추출한다.
-  mediapipe 0.10.35부터 구형 solutions API가 제거되어 Tasks API만 지원한다.
-  최초 실행 시 모델 파일(hand_landmarker.task·pose_landmarker.task)을 models/ 폴더에 자동 다운로드한다.
-  모델 경로/다운로드/랜드마커 생성/그리기/카메라 열기/손 이탈 경고 헬퍼는 src/capture/extractor.py에
-  공용으로 정의되어 있고, 이 파일은 거기서 가져다 쓴다 (뷰어가 core를 참조하는 방향 — dataset/collect.py도
-  같은 헬퍼를 가져다 쓴다).
-
-[처리 흐름]
-카메라 프레임(BGR) 캡처 → 좌우 반전(셀피 뷰) → RGB 변환 후 mp.Image로 래핑
-→ HandLandmarker.detect_for_video() / PoseLandmarker.detect_for_video()로 같은 프레임에서
-  손(최대 2개) 21관절 + 상체 8관절을 각각 검출
-→ extractor.draw_detections()로 손은 초록/빨강, 포즈는 하늘색/주황 뼈대로 그림
-→ 연속 미검출 시 경고 오버레이(HandWarning, 손 기준), 화면에 FPS 표시
-
-[전체 파이프라인의 학습/예측 알고리즘] 이 뷰어 자체는 분류를 하지 않지만, 참고로 전체
-파이프라인은 30프레임 랜드마크 시퀀스를 PyTorch로 구현한 LSTM(2층, hidden 64) 시퀀스
-분류 모델로 학습·추론한다 — 수신호는 정지 자세가 아니라 시간에 따른 궤적(동적 제스처)이라
-시계열을 다루는 RNN 계열을 선택했다 (근거: doc/ml-flow.md 3절, doc/design.md).
-"""
+    [흐름]
+    카메라 프레임(BGR) 캡처 → 좌우 반전(셀피 뷰) → RGB 변환 후 mp.Image로 래핑
+    → HandLandmarker.detect_for_video() / PoseLandmarker.detect_for_video()로 같은 프레임에서
+    손(최대 2개) 21관절 + 상체 8관절을 각각 검출
+    → extractor.draw_detections()로 손은 초록/빨강, 포즈는 하늘색/주황 뼈대로 그림
+    → 연속 미검출 시 경고 오버레이(HandWarning, 손 기준), 화면에 FPS 표시
+'''
 
 import time # 프레임 타임스탬프(ms), FPS 계산
-
 import cv2 # OpenCV : 카메라 입력, 프레임 그리기/표시
 
 from src.capture.extractor import (
@@ -52,7 +35,6 @@ from src.console import banner, step
 
 
 def main() -> None:
-    """랜드마크 추출 → 시각화 루프 (학습/추론과 무관, 검증 전용)."""
     step("카메라/모델 초기화 중 (최초 실행 시 모델 다운로드로 시간이 걸릴 수 있음)")
     hand_landmarker = create_hand_landmarker()
     pose_landmarker = create_pose_landmarker()
@@ -73,7 +55,7 @@ def main() -> None:
         frame = cv2.flip(frame, 1)
         mp_image = to_mp_image(frame)
 
-        # 비디오 모드는 단조 증가하는 타임스탬프(ms)가 필요 —
+        # 비디오 모드는 단조 증가하는 타임스탬프(ms)가 필요
         # time.monotonic()은 시스템 시계 변경의 영향을 받지 않는 경과 시간(초)이라
         # (현재 - 시작) * 1000으로 "영상 재생 기준 몇 ms 지났는지"를 얻는다.
         timestamp_ms = int((time.monotonic() - start) * 1000)
@@ -107,7 +89,7 @@ def main() -> None:
         if key in (ord("q"), 27):  # 27 = ESC
             break
 
-    # 창/카메라/네이티브 리소스 정리 (생략 시 다음 실행에서 카메라 점유 문제 발생 가능)
+    # 창/카메라/네이티브 리소스 정리
     cap.release()
     cv2.destroyAllWindows()
     hand_landmarker.close()

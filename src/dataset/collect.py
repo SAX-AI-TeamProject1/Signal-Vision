@@ -1,68 +1,51 @@
-# Last updated: 2026-07-14
+# Last updated: 2026-07-27
 
-"""[역할] 수신호 랜드마크 시퀀스를 라벨별로 모아 학습 데이터(asset/)로 저장하는 수집 스크립트
-(자동 연속 수집 + 화면 클릭 버튼 UI). 카메라 앞에서 같은 동작을 여러 번 반복하면, 시퀀스
-하나하나가 `src/training/train.py`가 읽어 들일 학습 샘플이 된다.
+'''
+    collect.py
+    
+    수신호 랜드마크 시퀀스를 라벨별로 모아 학습 데이터(asset/)로 저장하는 수집 스크립트
+    (자동 연속 수집 + 화면 클릭 버튼 UI). 카메라 앞에서 같은 동작을 여러 번 반복하면, 시퀀스
+    하나하나가 `src/training/train.py`가 읽어 들일 학습 샘플이 된다.
 
-특징 형식은 여기서 만들지 않고 `src/capture/extractor.py`를 그대로 가져다 쓴다 — 양손 +
-상체 포즈 150차원(FEATURE_DIM). 수집·학습·추론이 전부 같은 추출기를 거쳐야 형식이 어긋나지
-않기 때문이다 (doc/design.md 참고).
-사용법:
-    python -m src.dataset.collect --label stop [--samples 30] [--frames 30]
-    python -m src.dataset.collect                 # --label 생략 시 번호로 고르는 메뉴가 뜬다
+    조작 (화면 우상단 버튼 클릭 또는 키보드):
+        START/PAUSE 버튼 (또는 SPACE) — 자동 수집 시작/일시정지.
+            시작하면 "READY 카운트다운(기본 1.5초) → REC 녹화(30프레임) → 저장"이
+            목표 개수를 채울 때까지 자동 반복된다. 카운트다운 동안 다음 동작을 준비하면 된다.
+        QUIT 버튼 (또는 q/ESC) — 종료
 
-조작 (화면 우상단 버튼 클릭 또는 키보드):
-    START/PAUSE 버튼 (또는 SPACE) — 자동 수집 시작/일시정지.
-        시작하면 "READY 카운트다운(기본 1.5초) → REC 녹화(30프레임) → 저장"이
-        목표 개수를 채울 때까지 자동 반복된다. 카운트다운 동안 다음 동작을 준비하면 된다.
-    QUIT 버튼 (또는 q/ESC) — 종료
+    품질 보호:
+        손이 감지된 프레임이 절반 미만이면 저장하지 않고 SKIP 처리한다.
+        (신호없음처럼 손이 없는 게 정상인 라벨은 --idle 로 필터를 끈다)
 
-품질 보호:
-    손이 감지된 프레임이 절반 미만이면 저장하지 않고 SKIP 처리한다.
-    (신호없음처럼 손이 없는 게 정상인 라벨은 --idle 로 필터를 끈다)
+    저장 형식: asset/<label>/<타임스탬프>.npy — shape (frames, 150)
+'''
 
-저장 형식:
-    asset/<label>/<타임스탬프>.npy — shape (frames, 150)
-"""
+import argparse
+import time
+from pathlib import Path
 
-import argparse # 커맨드라인 인자(--label, --samples 등) 파싱
-import time # 타임스탬프(ms), 저장 파일명에 쓸 현재 시각
-from pathlib import Path # OS 무관 경로 처리 (Windows/macOS 공용, design.md 규약)
+import cv2
+import numpy as np
 
-import cv2 # OpenCV : 카메라 입력, 버튼/텍스트/진행바 그리기, 마우스 클릭 이벤트
-import numpy as np # 시퀀스를 (frames, 150) 배열로 쌓고 .npy로 저장하기 위한 수치 연산
-
-# 모델 다운로드·랜드마커 생성·그리기·카메라 열기 등은 여기서 재구현하지 않고 core 모듈
-# (extractor.py)에서 그대로 가져다 쓴다 — landmark_viewer.py와 동일한 헬퍼를 공유한다.
+# core 모듈 landmark_viewer.py와 동일한 헬퍼를 공유.
 from src.capture.extractor import (
     HAND_DIM,
     FeatureExtractor,
     HandWarning,
-    draw_detections,
     open_camera,
     process_frame,
 )
+from src.dataset.ui import WINDOW, ButtonBar, show
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "asset"
 MIN_DETECTED_RATIO = 0.5  # 손 감지 프레임이 이 비율 미만이면 SKIP
 
-WINDOW = "Collect"
-BTN_W, BTN_H, BTN_MARGIN = 150, 50, 10  # 버튼 하나의 가로/세로 크기와 버튼 사이 여백(픽셀)
-
-# doc/design.md에 현재 설계된 수신호 목록 — 오타 방지를 위한 참고용 메뉴일 뿐이다.
-# 클래스 목록 자체는 코드가 아니라 asset/ 폴더 이름으로 정해지므로(design.md 규약),
-# 여기 없는 이름을 --label로 줘도 막지 않는다 — 새 신호는 그냥 그 이름으로 수집하면 된다.
-KNOWN_LABELS = ["stop", "slow", "come", "back", "left_go", "right_go", "idle"]
-
+KNOWN_LABELS = ["stop", "slow", "come", "back", "left_go", "right_go", "idle"] # 신호수집 라벨
 
 def choose_label(preset: str | None) -> str:
-    """라벨을 정한다.
-
-    --label을 줬으면 그대로 쓰되, 알려진 목록(KNOWN_LABELS)에 없으면 오타일 수 있다고
+    '''label을 줬으면 그대로 쓰되, 알려진 목록(KNOWN_LABELS)에 없으면 오타일 수 있다고
     경고만 하고 진행한다 (새 신호 추가를 막지 않기 위해 차단하지는 않는다).
-    --label이 없으면 번호로 고르는 메뉴를 보여주되, 목록에 없는 이름을 직접 타이핑해도
-    받아준다 — 메뉴는 "고르기 편하게" 돕는 용도지 강제하는 용도가 아니다.
-    """
+    '''
     if preset is not None:
         if preset not in KNOWN_LABELS:
             print(f"⚠ '{preset}'은 알려진 라벨 목록에 없습니다 — 오타가 아니라면 새 신호로 그대로 진행합니다")
@@ -95,85 +78,14 @@ def choose_label(preset: str | None) -> str:
         return choice
 
 
-# cv2 창엔 버튼 위젯이 없어서, 사각형을 직접 그리고 마우스 클릭 좌표가 그 사각형 안에
-# 들어오는지 매 프레임 검사하는 방식으로 "클릭 가능한 버튼"을 흉내 낸다.
-class ButtonBar:
-    """창 우상단에 클릭 가능한 버튼을 그리고 클릭 이벤트를 받는다."""
-
-    def __init__(self) -> None:
-        self._clicked: str | None = None  # 마지막으로 클릭된 버튼 이름 (pop()으로 소비됨)
-        self._rects: dict[str, tuple[int, int, int, int]] = {}  # 버튼 이름 → (x1, y1, x2, y2) 픽셀 사각형
-
-    def attach(self, window: str) -> None:
-        """OpenCV의 저수준 마우스 콜백을 이 창에 등록한다 (클릭 감지는 이 콜백을 통해서만 들어옴)."""
-        cv2.setMouseCallback(window, self._on_mouse)
-
-    def _on_mouse(self, event, x, y, *_args) -> None:
-        # cv2 콜백 시그니처가 고정이라 flags/param은 안 쓰지만 자리만 *_args로 받아둔다.
-        if event == cv2.EVENT_LBUTTONDOWN:
-            # 클릭 좌표(x, y)가 어느 버튼 사각형 안에 들어오는지 선형 탐색으로 찾는다 (버튼 몇 개뿐이라 충분).
-            for name, (x1, y1, x2, y2) in self._rects.items():
-                if x1 <= x <= x2 and y1 <= y <= y2:
-                    self._clicked = name
-
-    def draw(self, frame, buttons: list[tuple[str, str, tuple[int, int, int]]]) -> None:
-        """buttons: (이름, 표시 텍스트, BGR 색) 목록. 오른쪽부터 배치된다."""
-        self._rects = {}  # 이번 프레임 버튼 배치로 클릭 판정 영역을 매번 새로 채움 (버튼 목록이 프레임마다 바뀔 수 있어서)
-        w = frame.shape[1]
-        x2 = w - BTN_MARGIN  # 화면 오른쪽 끝에서 시작해 왼쪽으로 하나씩 배치
-        for name, label, color in buttons:
-            x1 = x2 - BTN_W
-            y1, y2 = BTN_MARGIN, BTN_MARGIN + BTN_H
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
-            cv2.putText(
-                frame, label, (x1 + 14, y1 + 34),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2,
-            )
-            self._rects[name] = (x1, y1, x2, y2)
-            x2 = x1 - BTN_MARGIN  # 다음 버튼은 이 버튼 왼쪽에 이어 붙인다
-
-    def pop(self) -> str | None:
-        """클릭된 버튼 이름을 반환하고 내부 상태는 비운다 (한 번 클릭 = 한 번만 반응하도록)."""
-        clicked, self._clicked = self._clicked, None
-        return clicked
-
-
-def show(frame, hand_result, pose_result, text: str, color, bar: ButtonBar, buttons,
-         progress: float | None = None,
-         warning: HandWarning | None = None) -> str | None:
-    """랜드마크·상태 텍스트·버튼을 그려 표시하고, 발생한 동작을 반환한다.
-
-    progress가 주어지면(0~1) 화면 하단에 빨간 진행 바를 그린다 (녹화 진행 표시용).
-    warning이 주어지면 손 미감지 상태를 갱신하고 이탈 경고를 그린다.
-    반환: 'toggle' (START/PAUSE 버튼 또는 SPACE), 'quit' (QUIT 버튼 또는 q/ESC), None
-    """
-    draw_detections(frame, hand_result, pose_result)
-    if warning is not None:
-        warning.update(hand_result)
-        warning.draw(frame)
-    cv2.putText(frame, text, (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
-    if progress is not None:
-        h, w = frame.shape[:2]
-        cv2.rectangle(frame, (0, h - 14), (int(w * progress), h), (0, 0, 255), -1)
-    bar.draw(frame, buttons)
-    cv2.imshow(WINDOW, frame)
-    key = cv2.waitKey(1) & 0xFF
-    clicked = bar.pop()
-    if key in (ord("q"), 27) or clicked == "quit":  # 27 = ESC
-        return "quit"
-    if key == ord(" ") or clicked == "toggle":
-        return "toggle"
-    return None
-
-
 def hand_detected_ratio(seq: np.ndarray) -> float:
-    """시퀀스에서 손(앞 126차원 = 왼손 63 + 오른손 63)이 감지된 프레임 비율.
+    '''
+    시퀀스에서 손(왼손 63 + 오른손 63)이 감지된 프레임 비율.
 
     `seq[:, :HAND_DIM*2] != 0`은 (frames, 126) 크기의 True/False 배열이 되고,
     `.any(axis=1)`로 프레임마다 "손 126차원 중 하나라도 0이 아니면 손이 감지된 프레임"으로 판정한
     (frames,) 불리언 배열을 만든 다음, `.mean()`으로 그 비율(감지된 프레임 수 / 전체 프레임 수)을 낸다.
-    """
+    '''
     return float((seq[:, : HAND_DIM * 2] != 0).any(axis=1).mean())
 
 
@@ -181,10 +93,10 @@ def record_sequence(cap, extractor, num_frames: int, t0: float,
                     bar: ButtonBar | None = None,
                     status: str = "",
                     warning: HandWarning | None = None) -> tuple[np.ndarray, str | None]:
-    """num_frames 프레임 동안 시퀀스를 녹화한다. 반환: (시퀀스 (num_frames, 150), 동작).
-
+    '''
+    num_frames 프레임 동안 시퀀스를 녹화한다. 반환: (시퀀스 (num_frames, 150), 동작).
     녹화 진행은 프레임 숫자 대신 하단 진행 바로 표시한다 (저장 개수와 혼동 방지).
-    """
+    '''
     buffer = []
     action = None
     while len(buffer) < num_frames:
@@ -196,16 +108,12 @@ def record_sequence(cap, extractor, num_frames: int, t0: float,
             a = show(frame, hand_result, pose_result, f"{status}  REC", (0, 0, 255),
                      bar, [("quit", "QUIT", (0, 0, 180))],
                      progress=len(buffer) / num_frames, warning=warning)
-            # 이 루프 도중 QUIT을 눌러도 즉시 끊지 않고, 프레임을 다 채운 뒤(while 조건 종료) 상위
-            # main()에 action="quit"을 돌려줘서 거기서 정리하며 빠져나가게 한다. `a or action`은
-            # "한 번이라도 quit이 감지되면 이후 매 프레임 None으로 덮어써지지 않게" 유지하는 역할.
-            action = a or action
+            action = a or action  # quit 감지돼도 즉시 끊지 않고, 프레임을 다 채운 뒤 main()에서 종료 처리
     return np.stack(buffer), action
 
 
 def countdown(cap, extractor, t0: float, seconds: float, status: str,
               bar: ButtonBar, warning: HandWarning | None = None) -> str | None:
-    """다음 녹화 전 준비 카운트다운. 발생한 동작을 반환한다."""
     action = None
     end = time.monotonic() + seconds  # 카운트다운 종료 시각을 미리 계산해 둠
     while time.monotonic() < end:

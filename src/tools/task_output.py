@@ -1,4 +1,4 @@
-# Last updated: 2026-07-13
+# Last updated: 2026-07-27
 """VSCode 태스크 스크립트(setup_venv/install_deps/check_env) 공용 출력 포맷터.
 
 진행 상황이 없으면 터미널이 멈춘 것처럼 보이므로, 오래 걸리는 작업 전에는
