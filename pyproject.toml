@@ -5,7 +5,7 @@ description = "수신호를 통한 로봇제어와 이동간 장애물 감지(Op
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "opencv-contrib-python==5.0.0.93",
-    "mediapipe==0.10.35",
+    "mediapipe==0.10.18",
     "numpy==2.5.0",
     "torch==2.12.1",
     "scikit-learn==1.9.0",
