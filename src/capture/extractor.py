@@ -80,15 +80,19 @@ def ensure_hand_model() -> Path:
 def ensure_pose_model() -> Path:
     return _ensure_model(POSE_MODEL_PATH, POSE_MODEL_URL, "포즈")
 
-def create_hand_landmarker(running_mode=vision.RunningMode.VIDEO):
-    '''손 랜드마커를 생성한다 (뷰어·특징 추출기가 동일한 옵션을 공유).'''
+def create_hand_landmarker(running_mode=vision.RunningMode.VIDEO, min_confidence: float = 0.5):
+    '''손 랜드마커를 생성한다 (뷰어·특징 추출기가 동일한 옵션을 공유).
+
+    min_confidence: 손 검출/존재/추적 신뢰도 임계값 (세 옵션에 동일하게 적용).
+    낮출수록 장갑 낀 손처럼 윤곽이 흐릿한 경우도 더 잘 잡지만, 오검출·지터도 늘어난다.
+    '''
     options = vision.HandLandmarkerOptions(
         base_options=mp_tasks.BaseOptions(model_asset_path=str(ensure_hand_model())),
         running_mode=running_mode,  # 연속 프레임 입력을 전제로 하는 모드 (타임스탬프 필요)
         num_hands=2,  # 양손 모두 추적
-        min_hand_detection_confidence=0.5,
-        min_hand_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_hand_detection_confidence=min_confidence,
+        min_hand_presence_confidence=min_confidence,
+        min_tracking_confidence=min_confidence,
     )
     return vision.HandLandmarker.create_from_options(options)
 
@@ -136,8 +140,8 @@ class FeatureExtractor:
     두 모델 검출 결과를 위 FEATURE_DIM 포맷의  150차원 특징 벡터로 변환해준다.
     VIDEO 모드
     '''
-    def __init__(self) -> None:
-        self.hands = create_hand_landmarker()
+    def __init__(self, hand_confidence: float = 0.5) -> None:
+        self.hands = create_hand_landmarker(min_confidence=hand_confidence)
         self.pose = create_pose_landmarker()
 
     def detect(self, bgr_frame, timestamp_ms: int):
@@ -213,21 +217,55 @@ def process_frame(cap: cv2.VideoCapture, extractor: "FeatureExtractor", t0: floa
     return frame, hand_result, pose_result
 
 
-# OS별 백엔드 웹캠
-def open_camera(index: int = 0) -> cv2.VideoCapture:
+def _camera_backend() -> int:
     system = platform.system()
     if system == "Windows":
-        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-    elif system == "Darwin":  # macOS
-        cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
-    else:
-        cap = cv2.VideoCapture(index)
+        return cv2.CAP_DSHOW
+    if system == "Darwin":  # macOS
+        return cv2.CAP_AVFOUNDATION
+    return cv2.CAP_ANY
+
+
+# OS별 백엔드 웹캠
+def open_camera(index: int = 0) -> cv2.VideoCapture:
+    cap = cv2.VideoCapture(index, _camera_backend())
     if not cap.isOpened():
         raise RuntimeError(
             f"카메라 {index}번을 열 수 없습니다. "
             "다른 앱이 카메라를 사용 중인지, OS 카메라 권한이 허용되어 있는지 확인하세요."
         )
     return cap
+
+
+def list_cameras(max_index: int = 5) -> list[int]:
+    '''0부터 max_index-1까지 순서대로 열어봐서 실제로 연결된 카메라 인덱스만 반환한다.'''
+    backend = _camera_backend()
+    found = []
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i, backend)
+        if cap.isOpened():
+            found.append(i)
+        cap.release()
+    return found
+
+
+def choose_camera_index(preset: int | None = None) -> int:
+    '''연결된 카메라가 여러 대면 번호를 골라 선택하게 한다. 한 대뿐이면 그걸 바로 쓴다.'''
+    if preset is not None:
+        return preset
+    found = list_cameras()
+    if not found:
+        return 0  # 못 찾아도 0번으로 시도 (open_camera가 실패 시 에러 메시지로 안내)
+    if len(found) == 1:
+        return found[0]
+    print("연결된 카메라가 여러 개 감지됐습니다:")
+    for i in found:
+        print(f"  {i}. 카메라 {i}")
+    while True:
+        choice = input("사용할 카메라 번호 입력: ").strip()
+        if choice.isdigit() and int(choice) in found:
+            return int(choice)
+        print("목록에 없는 번호입니다.")
 
 
 # 손 이탈 경고: 연속 미감지가 이 프레임 수를 넘으면 화면을 빨갛게 깜빡인다

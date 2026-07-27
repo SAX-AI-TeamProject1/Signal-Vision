@@ -205,21 +205,24 @@
                 "command": "${workspaceFolder}/.venv/bin/python",
                 "args": [
                     "-m",
-                    "src.inference.predict"
+                    "src.inference.predict",
+                    "--hand-confidence", "${input:handConfidence}"
                 ]
             },
             "linux": {
                 "command": "${workspaceFolder}/.venv/bin/python",
                 "args": [
                     "-m",
-                    "src.inference.predict"
+                    "src.inference.predict",
+                    "--hand-confidence", "${input:handConfidence}"
                 ]
             },
             "windows": {
                 "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
                 "args": [
                     "-m",
-                    "src.inference.predict"
+                    "src.inference.predict",
+                    "--hand-confidence", "${input:handConfidence}"
                 ]
             },
             "options": {
@@ -240,7 +243,8 @@
                     "-m",
                     "src.inference.predict",
                     "--publish", "rosbridge",
-                    "--rosbridge-url", "${input:rosbridgeUrl}"
+                    "--rosbridge-url", "${input:rosbridgeUrl}",
+                    "--hand-confidence", "${input:handConfidence}"
                 ]
             },
             "linux": {
@@ -249,7 +253,8 @@
                     "-m",
                     "src.inference.predict",
                     "--publish", "rosbridge",
-                    "--rosbridge-url", "${input:rosbridgeUrl}"
+                    "--rosbridge-url", "${input:rosbridgeUrl}",
+                    "--hand-confidence", "${input:handConfidence}"
                 ]
             },
             "windows": {
@@ -258,7 +263,8 @@
                     "-m",
                     "src.inference.predict",
                     "--publish", "rosbridge",
-                    "--rosbridge-url", "${input:rosbridgeUrl}"
+                    "--rosbridge-url", "${input:rosbridgeUrl}",
+                    "--hand-confidence", "${input:handConfidence}"
                 ]
             },
             "options": {
@@ -346,6 +352,12 @@
             "type": "promptString",
             "description": "Signal-Simulation의 rosbridge 웹소켓 주소 (같은 리눅스 머신이면 기본값 그대로 두면 됨)",
             "default": "ws://localhost:9090"
+        },
+        {
+            "id": "handConfidence",
+            "type": "promptString",
+            "description": "손 검출 신뢰도 임계값 (0~1, 기본 0.5) — 낮추면 장갑 등으로 윤곽이 흐릿해도 더 잘 잡지만 오검출·지터가 늘어남",
+            "default": "0.5"
         }
     ]
 }
