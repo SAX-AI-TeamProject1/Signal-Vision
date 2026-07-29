@@ -14,6 +14,13 @@
         — 골반 포함으로 어깨-골반 상대 관계(상반신 회전)를 표현할 수 있다.
         감지 안 된 손/포즈는 0으로 채움.
 
+        좌표는 화면(카메라 프레임) 기준 절대 좌표가 아니라, 어깨 중심(랜드마크 11·12 중점)을
+        원점으로 한 상대 좌표를 어깨너비로 나눠 스케일까지 정규화한 값이다 — 그렇지 않으면
+        데이터가 적을 때 모델이 "동작의 모양"이 아니라 "화면 어디서 시작했는지"라는 훨씬 쉬운
+        지름길을 학습해버린다 (예: 항상 화면 오른쪽에서 시작하면 동작과 무관하게 매번 같은
+        라벨로 분류됨). 포즈가 감지되지 않아 원점을 잡을 수 없으면 정규화를 건너뛰고 원본
+        좌표를 그대로 쓴다 (드문 경우이며, 없는 것보다는 낫다).
+
     목장갑 등으로 손 랜드마크가 불안정한 환경에서도 포즈(팔 궤적)는 몸 전체
     스케일로 추정되어 상대적으로 강인하다 (doc/design.md 참고).
 
@@ -152,22 +159,49 @@ class FeatureExtractor:
         )
 
     @staticmethod
+    def _reference_frame(pose_lms) -> tuple[np.ndarray, float] | None:
+       
+        if pose_lms is None:
+            return None
+        l_sh = np.array([pose_lms[11].x, pose_lms[11].y, pose_lms[11].z], dtype=np.float32)  # 왼쪽 어깨
+        r_sh = np.array([pose_lms[12].x, pose_lms[12].y, pose_lms[12].z], dtype=np.float32)  # 오른쪽 어깨
+        origin = (l_sh + r_sh) / 2  # 두 어깨의 중점 = 몸통 중심선 위의 기준점
+        # z(깊이)는 원근에 따라 안정성이 떨어지므로 스케일 계산에는 화면 평면(x, y)만 사용
+        scale = float(np.linalg.norm(r_sh[:2] - l_sh[:2]))
+        if scale < 1e-6:
+            return None
+        return origin, scale
+
+    @staticmethod
     def vector(hand_result, pose_result) -> np.ndarray:
         # 검출 결과 → (150,) 벡터. 왼손 | 오른손 | 상체 포즈 순.
         vec = np.zeros(FEATURE_DIM, dtype=np.float32)
+
+        # 이번 프레임의 정규화 기준을 한 번만 계산해서 손·포즈 좌표 변환에 공통으로 사용한다
+        # (손과 포즈가 서로 다른 기준으로 정규화되면 상대적 위치 관계가 깨지기 때문).
+        pose_lms = pose_result.pose_landmarks[0] if pose_result.pose_landmarks else None  # 인물 1명 기준, 첫 검출만 사용
+        frame = FeatureExtractor._reference_frame(pose_lms)
+        # 기준을 못 구했으면 origin=0, scale=1로 두어 사실상 "정규화 없음"(원본 좌표 그대로)과
+        # 동일하게 동작시킨다 — 별도 분기 없이 아래 수식 하나로 정규화 여부를 모두 처리하기 위함.
+        origin, scale = frame if frame is not None else (np.zeros(3, dtype=np.float32), 1.0)
+
         for hand_lms, handedness in zip(hand_result.hand_landmarks, hand_result.handedness):
             slot = 0 if handedness[0].category_name == "Left" else 1  # 왼손=0번 슬롯, 오른손=1번 슬롯
-            # 관절 21개 × (x, y, z) → 63개짜리 1차원 배열로 펼침 (flatten)
-            coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms], dtype=np.float32).flatten()
-            vec[slot * HAND_DIM : (slot + 1) * HAND_DIM] = coords
-        if pose_result.pose_landmarks:
-            pose_lms = pose_result.pose_landmarks[0]  # 인물 1명 기준, 첫 번째 검출만 사용
-            # 상체 8관절만 골라 (x, y, z) 순으로 펼쳐 24개짜리 배열을 만듦
+            # 관절 21개 × (x, y, z) → 어깨 중심 기준 상대 좌표로 변환(평행이동+스케일 정규화) 후
+            # 63개짜리 1차원 배열로 펼침(flatten)
+            coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms], dtype=np.float32)
+            coords = (coords - origin) / scale
+            vec[slot * HAND_DIM : (slot + 1) * HAND_DIM] = coords.flatten()
+        if pose_lms is not None:
+            # 상체 8관절만 골라 (x, y, z) 순으로 펼쳐 24개짜리 배열을 만듦.
+            # 손과 동일한 origin/scale로 정규화해야 "어깨 대비 손목이 얼마나 벌어졌는지" 같은
+            # 손-포즈 간 상대 관계가 유지된다.
             coords = np.array(
                 [[pose_lms[j].x, pose_lms[j].y, pose_lms[j].z] for j in UPPER_BODY_JOINTS],
                 dtype=np.float32,
-            ).flatten()
-            vec[HAND_DIM * 2 :] = coords  # 벡터 뒤쪽 24차원 = 상체 포즈
+            )
+            coords = (coords - origin) / scale
+            vec[HAND_DIM * 2 :] = coords.flatten()  # 벡터 뒤쪽 24차원 = 상체 포즈
         return vec
 
     def close(self) -> None:
