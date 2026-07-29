@@ -40,3 +40,29 @@
 
 ## 2026-07-26 - 코드 리펙토링
 - 지저분한 주석 처리 (docustring)와 코드 리펙토링 수정
+
+## 2026-07-29 — 좌표 정규화 버그 수정 (한인혁)
+
+- `left_go`/`right_go` 수신호가 실제 동작과 무관하게 화면 시작 위치에 따라 분류되는 문제 발견 → `src/capture/extractor.py`의 `FeatureExtractor.vector()`에 어깨 중심 원점 + 어깨너비 스케일 정규화(`_reference_frame()`) 추가.
+- 좌표계 변경으로 `src/training/augment.py`의 스케일/렌즈왜곡 증강 기준점(화면 중앙 0.5 가정)이 어긋나던 문제도 함께 수정 (원점 0 기준으로 통일).
+- 정규화 이전에 모은 `asset/left_go`, `asset/right_go` 삭제 후 라벨당 120개씩 재수집·재학습, 실시간 추론 정상 동작 확인.
+- 문제 경위·대응·다음 수집 체크리스트를 기록하는 `doc/data_collection_log.md` 신설.
+- 커밋 `2b539cb`(`fix: normalize landmarks to shoulder-relative coordinates`)로 반영, `Signal_Collector` 브랜치에 푸시.
+
+## 2026-07-29 — idle 라벨 추가 시도 + 실시간 left/right 회귀 (미해결, 데이터 재수집으로 결론)
+
+- `idle` 라벨 120개 수집(라벨이 `idle`이면 손 감지 품질 필터가 자동으로 꺼지도록 `src/dataset/collect.py` 수정) 후 3클래스(idle/left_go/right_go)로 재학습.
+- idle이 offline test(94~96%)는 잘 나오는데 실시간에서 신뢰도 80%(확정 임계값)를 못 넘는 문제 확인. 손 소실 증강(`augment.py`의 `P_HAND_DROPOUT`), 손 검출 신뢰도 임계값 불일치(collect.py 0.5 vs predict.py 기본 0.4) 등을 의심해 검증했으나 둘 다 원인이 아님으로 확인.
+- idle 개선을 위해 `SignLSTM.forward()`의 분류head 입력을 "마지막 타임스텝만" → "[마지막 | 전체 평균] concat"으로 변경, 총 3차례 재학습(순수 concat / concat + head dropout 0.5 + weight_decay 1e-4) 시도. offline test는 매번 양호했지만, 실시간에서는 idle은 되어도 `left_go`/`right_go`가 반대로 나오는 현상이 반복 발생.
+- `git checkout`으로 `train.py`를 원래 구조(마지막 타임스텝만 사용)로 되돌려 재학습했으나 실시간 left/right 반전이 사라지지 않음 — 이 과정에서 `torch.manual_seed()`가 아예 없어 재학습할 때마다 모델 가중치 초기화가 랜덤이었던 것을 발견해 `42`로 고정.
+- 시드 고정 후 재학습해도 동일 증상 지속. 손 좌우 슬롯(handedness) 의존 여부, 카메라 미러 모드(수집 시점 vs 실시간) 일치 여부, `asset/left_go`·`asset/right_go` 라벨 스왑 가능성을 차례로 점검했으나 결정적 원인을 특정하지 못함.
+- **결론(미해결)**: 코드(정규화·증강·풀링 구조·시드) 쪽 문제라기보다, 이 세션 안에서 반복 재수집하는 과정에서 데이터 자체의 일관성이 깨졌을 가능성이 높다고 보고 원인 규명을 중단. `idle`/`left_go`/`right_go` 데이터를 전부 삭제하고 한 세션에서 처음부터 다시 수집하기로 결정 (다음 작업).
+- `train.py`에 `torch.manual_seed(42)` 추가 — 데이터 셔플/증강(`np.random.default_rng(42)`)은 이미 시드 고정돼 있었지만 모델 가중치 초기화(PyTorch 자체 RNG)는 고정된 적이 없어 재학습마다 결과가 달라졌던 것을 발견해 고정 (재현 가능한 학습을 위한 선행 조건).
+
+## 2026-07-29 — 데이터 재수집으로 left/right 문제 해결 + 전체 7클래스 확장
+
+- `idle`/`left_go`/`right_go` 삭제 후 한 세션에서 `left_go`/`right_go`부터 재수집 → 방향 반전 현상 사라짐(offline test 100%, 방향도 정상). 다만 실시간 신뢰도가 58~71%로 확정 임계값(80%)에 못 미침 — 120개로는 실제 카메라 노이즈까지 커버하기엔 부족하다고 판단, 라벨당 30개씩 추가 수집(180개)하기로 함.
+- 이어서 나머지 라벨(`back`, `come`, `idle`, `slow`, `stop`)도 각 120개씩 수집 완료 — 전체 7클래스(`asset/`) 데이터셋 완성.
+- 전체 재학습 결과: test 정확도 93.8%. `left_go`/`right_go`는 offline 100%이고 실시간 추론에서도 정상 확정 확인. `back`/`come`/`idle` 세 라벨 사이에 일부 혼동 존재(예: come↔back, come/idle↔right_go 소수 오분류) — 다음 개선 대상.
+- 모델 재학습 결과 `models/sign_classifier.pt`에 반영.
+

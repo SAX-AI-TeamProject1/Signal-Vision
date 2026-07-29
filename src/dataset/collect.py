@@ -139,10 +139,12 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=30, help="시퀀스당 프레임 수")
     parser.add_argument("--prep", type=float, default=1.5, help="녹화 전 준비 시간(초)")
     parser.add_argument("--idle", action="store_true",
-                        help="손 감지 품질 필터 끄기 (신호없음처럼 손이 없어도 되는 라벨)")
+                        help="손 감지 품질 필터 끄기 (신호없음처럼 손이 없어도 되는 라벨). "
+                             "라벨이 'idle'이면 이 플래그 없이도 자동으로 꺼진다")
     args = parser.parse_args()
 
     label = choose_label(args.label)
+    idle_mode = args.idle or label == "idle"  # idle 라벨은 --idle을 깜빡해도 항상 예외 처리
     out_dir = DATA_DIR / label
     out_dir.mkdir(parents=True, exist_ok=True)
     existing = len(list(out_dir.glob("*.npy")))
@@ -154,7 +156,7 @@ def main() -> None:
     cv2.namedWindow(WINDOW)
     bar = ButtonBar()
     bar.attach(WINDOW)
-    warning = HandWarning(enabled=not args.idle)  # idle 수집은 손이 없는 게 정상
+    warning = HandWarning(enabled=not idle_mode)  # idle 수집은 손이 없는 게 정상
 
     t0 = time.monotonic()
     saved = 0
@@ -193,7 +195,7 @@ def main() -> None:
 
         seq, action = record_sequence(cap, extractor, args.frames, t0, bar, status, warning)
         ratio = hand_detected_ratio(seq)
-        if not args.idle and ratio < MIN_DETECTED_RATIO:
+        if not idle_mode and ratio < MIN_DETECTED_RATIO:
             skipped += 1  # 손이 잘 안 보인 시퀀스는 저장하지 않고 버림 (저품질 학습 데이터 방지)
             print(f"SKIP (손 감지 {ratio * 100:.0f}% < 50%) — 손을 화면에 보이게 해주세요")
         else:

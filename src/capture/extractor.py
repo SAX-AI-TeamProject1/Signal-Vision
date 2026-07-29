@@ -236,6 +236,7 @@ def draw_detections(frame, hand_result, pose_result) -> None:
     draw_pose(frame, pose_result)
 
 
+
 def process_frame(cap: cv2.VideoCapture, extractor: "FeatureExtractor", t0: float):
     '''프레임 1장을 읽어 검출까지 수행 (수집·추론 공용). 
     반환: (frame, 손결과, 포즈결과) 또는 (None,)*3.
