@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-07-30
 
 '''
     공용 특징 추출기: 양손 랜드마크 + 상체 포즈 → 고정 크기 벡터.
@@ -269,6 +269,10 @@ def open_camera(index: int = 0) -> cv2.VideoCapture:
             f"카메라 {index}번을 열 수 없습니다. "
             "다른 앱이 카메라를 사용 중인지, OS 카메라 권한이 허용되어 있는지 확인하세요."
         )
+    # 오토포커스를 꺼서 초점을 고정한다 — 손이 카메라에 가깝게 들어오면 오토포커스가 손 쪽으로
+    # 초점을 옮기면서 배경(LensHealthMonitor가 보는 부분)이 심도 얕게 흐려져 렌즈 블러로 오판되는
+    # 문제가 있었다 (doc/work.md 2026-07-29 참고). 드라이버가 지원 안 하면 조용히 무시됨.
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
     return cap
 
 
@@ -306,8 +310,9 @@ def choose_camera_index(preset: int | None = None) -> int:
 # 손 이탈 경고: 연속 미감지가 이 프레임 수를 넘으면 화면을 빨갛게 깜빡인다
 WARN_AFTER_MISSES = 5
 
-BLUR_CALIBRATION_FRAMES = 30    # 시작 후 이 프레임 수 동안 "정상 화질" 기준치를 캘리브레이션(보간)
+BLUR_CALIBRATION_FRAMES = 30    # 시작 후 이 프레임 수 동안만(딱 한 번) "정상 화질" 기준치를 캘리브레이션
 BLUR_RATIO_DROP = 0.5           # 기준치 대비 이 비율 밑으로 떨어지면 블러(김서림 등)로 판정
+BLUR_HAND_MASK_PADDING = 0.15   # 손 바운딩 박스를 실제 손 크기보다 이만큼(비율) 더 여유 있게 잘라냄
 BLUR_HIGH_FREO_FRAC = 0.5       # 화면 반경 중 바깥쪽 몇 %를 "고주파(잔 디테일)"로 볼지
 class HandWarning:
     '''학습 데이터 수집 중 손이 프레임 밖으로 나가면 그 구간은 0으로 채워진 저품질 샘플이 되므로,
@@ -337,13 +342,45 @@ class HandWarning:
         
         cv2.putText(frame, "!! HAND OUT OF FRAME !!", (w // 2 - 260, h // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
-def _sharpness_score(gray: np.ndarray) -> float:
+def _hand_exclude_mask(shape: tuple[int, int], hand_result) -> np.ndarray | None:
+    '''손이 화면에서 차지하는 픽셀 영역(바운딩 박스, 여유 패딩 포함)을 True로 표시한 불리언 마스크.
+
+    손이 카메라에 가깝게/크게 들어오면 그 부분만으로도 화면 전체 선명도가 구조적으로 낮아지는데
+    (렌즈 이상과 무관), 이 영역을 선명도 계산에서 제외하면 나머지 화면(빗방울·먼지가 어디에
+    묻든)은 계속 원래 기준(BLUR_RATIO_DROP)으로 감시할 수 있다 — 화면 일부(예: 위쪽)만 고정으로
+    보는 방식과 달리, 손이 없는 위치에 생긴 이상은 그대로 잡아낸다.
+
+    손이 없으면 None(제외할 영역 없음 — 화면 전체 사용).
+    '''
+    if not hand_result.hand_landmarks:
+        return None
+    h, w = shape
+    mask = np.zeros((h, w), dtype=bool)
+    for hand_lms in hand_result.hand_landmarks:
+        xs = [lm.x for lm in hand_lms]
+        ys = [lm.y for lm in hand_lms]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        pad_x = (x1 - x0) * BLUR_HAND_MASK_PADDING + 0.02
+        pad_y = (y1 - y0) * BLUR_HAND_MASK_PADDING + 0.02
+        x0, x1 = max(0.0, x0 - pad_x), min(1.0, x1 + pad_x)
+        y0, y1 = max(0.0, y0 - pad_y), min(1.0, y1 + pad_y)
+        mask[int(y0 * h) : int(y1 * h), int(x0 * w) : int(x1 * w)] = True
+    return mask
+
+
+def _sharpness_score(gray: np.ndarray, exclude_mask: np.ndarray | None = None) -> float:
     '''그레이스케일 프레임의 선명도를 라플라시안(2차 미분) 분산으로 측정한다.
     라플라시안은 엣지(밝기가 급변하는 지점)에서 값이 크고, 평탄한 영역에서는 0에 가깝다.
     블러(디포커스·김서림)는 엣지를 뭉개므로 이 분산이 함께 떨어진다.
     FFT 비율과 달리 화면 전체 밝기(저주파) 성분이 계산에 섞여 들어가지 않아 선명/블러 구분력이 훨씬 높다.
+
+    exclude_mask가 있으면 그 영역(손이 차지한 부분)은 계산에서 뺀다.
     '''
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    lap = cv2.Laplacian(gray, cv2.CV_64F)
+    if exclude_mask is not None and exclude_mask.any():
+        lap = lap[~exclude_mask]
+    return float(lap.var())
 
 class LensHealthMonitor:
     '''카메라 프레임의 고주파 성분 추이 (렌즈 블러 현상 진단)
@@ -355,15 +392,25 @@ class LensHealthMonitor:
         self._samples : list[float] = []
         self.ratio_ema : float | None = None
 
-    def update(self,frame:np.ndarray) -> bool:
+    @property
+    def baseline(self) -> float | None:
+        '''디버깅용 — 캘리브레이션된 기준치를 외부에서 읽을 수 있게 노출.'''
+        return self._baseline
+
+    def update(self, frame: np.ndarray, hand_result=None) -> bool:
+        '''hand_result: process_frame()이 반환한 손 검출 결과 (있으면 그 영역을 선명도 계산에서
+        제외 — 손이 카메라에 가깝게 들어와 생기는 정상적인 선명도 저하를 렌즈 블러로 오판하지
+        않기 위함). None이면 화면 전체로 계산한다.
+        '''
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        ratio = _sharpness_score(gray)
+        mask = _hand_exclude_mask(gray.shape, hand_result) if hand_result is not None else None
+        ratio = _sharpness_score(gray, mask)
         self.ratio_ema = ratio if self.ratio_ema is None else 0.2* ratio + 0.8 *self.ratio_ema
 
         if self._baseline is None:
             self._samples.append(self.ratio_ema)
             if len(self._samples) >= BLUR_CALIBRATION_FRAMES:
                 self._baseline = float(np.median(self._samples))
-            return False 
+            return False
 
         return self.ratio_ema < self._baseline * BLUR_RATIO_DROP

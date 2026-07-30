@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-07-30
 '''
 외부(ROS 노드 등)에서 이 파일 하나만 import해서 추론/GUI를 호출할 수 있게 묶은 진입점.
 
@@ -59,7 +59,8 @@ class _Runtime:
         draw_detections(frame, hand_result, pose_result)
         self.warning.update(hand_result)
         self.warning.draw(frame)
-        is_blurred = self.lens_monitor.update(frame)
+        is_blurred = self.lens_monitor.update(frame, hand_result)
+        self.stabilizer.set_emergency(is_blurred)  # 사람 감지/신호 확정과 무관하게 매 프레임 독립 갱신
         self.window.append(FeatureExtractor.vector(hand_result, pose_result))
 
         if len(self.window) == self.num_frames:
@@ -67,12 +68,12 @@ class _Runtime:
             # 안전 가드: 윈도우 대부분에서 사람(포즈)이 안 잡히면 모델 판단을 신뢰하지 않는다
             pose_ratio = float((arr[:, HAND_DIM * 2:] != 0).any(axis=1).mean())
             if pose_ratio < 0.3:
-                self.stabilizer.mark_person_absent(is_blurred)
+                self.stabilizer.mark_person_absent()
             else:
                 x = torch.from_numpy(arr[None]).to(self.device)
                 with torch.no_grad():
                     raw_probs = torch.softmax(self.model(x), dim=1)[0].cpu().numpy()
-                self.stabilizer.update(raw_probs, self.labels, is_blurred)
+                self.stabilizer.update(raw_probs, self.labels)
 
         self._last_frame = frame
         idx = self.stabilizer.confirmed_idx

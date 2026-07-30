@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-07-30
 
 '''
 실시간 수신호 추론
@@ -70,9 +70,15 @@ class SignalStabilizer:
     모델 확률을 안정화 필터(임계값 + 연속 일치 + 히스테리시스)에 통과시켜 확정 신호를 관리한다.
 
     "확정 상태"(confirmed/confirmed_idx)와 그걸 바꾸는 규칙 — 연속 N회 일치해야 확정,
-    낮은 confidence는 유예를 두고 해제하되(분진 등 일시적 하락에 기계가 서지 않게)
-    렌즈 블러가 실측으로 겹치면 유예 없이 즉시 해제 — 을 한 곳에 모아, main() 루프는
-    매 프레임 update()/mark_person_absent() 호출만 하면 되게 한다.
+    낮은 confidence는 항상 유예를 두고 해제(분진 등 일시적 하락에 기계가 서지 않게) — 을
+    한 곳에 모아, main() 루프는 매 프레임 update()/mark_person_absent() 호출만 하면 되게 한다.
+
+    emergency는 오직 "카메라 자체의 인지 능력 저하"(렌즈 왜곡·물방울·분진 등, LensHealthMonitor가
+    측정)만 의미한다 — set_emergency()로 매 프레임 독립적으로 갱신하며, 신호 확정/해제나 사람
+    감지 여부와는 완전히 무관하다. "사람이 안 보인다"는 이유만으로는 emergency를 띄우지 않는다 —
+    Signal-Vision은 신호를 못 읽는다는 사실("인식 불가")만 보고할 뿐, 그게 실제로 위험한
+    상황인지(작업자가 라이다·YOLO 감지 범위 안에 있는지 등)는 twistmux 등 상위 시스템이
+    다른 센서까지 종합해 판단할 몫이지 Signal-Vision의 책임이 아니다 (doc/work.md 참고).
     '''
 
     def __init__(self, threshold: float, consecutive: int, ema: float, release_grace: float) -> None:
@@ -83,7 +89,7 @@ class SignalStabilizer:
 
         self.confirmed = "인식 불가"  # 화면/퍼블리시에 쓰는 현재 확정 신호 (라벨 문자열 또는 안전 기본값)
         self.confirmed_idx: int | None = None  # confirmed에 대응하는 라벨 인덱스 (None = 확정 없음)
-        self.emergency = False  # 블러+인식저하가 겹쳐 즉시정지된 상태 (정상 신호 재확정 시 해제)
+        self.emergency = False  # 카메라 인지 능력 저하 상태 (set_emergency()로만 갱신)
         self.status = "버퍼 채우는 중..."
         self.probs: np.ndarray | None = None  # 확률 EMA 상태 (HUD 패널·퍼블리시 confidence에 재사용)
         self.top: int | None = None  # 현재 1위 클래스 인덱스
@@ -92,26 +98,28 @@ class SignalStabilizer:
         self._streak = 0  # streak_label이 연속으로 몇 번째 유지되고 있는지 (--consecutive와 비교)
         self._low_conf_since: float | None = None  # 확정 해제 유예(히스테리시스) 타이머 시작 시각
 
-    def _reset_to_unknown(self, reason: str, emergency: bool) -> None:
+    def set_emergency(self, is_blurred: bool) -> None:
+        '''카메라 인지 능력 저하 상태를 매 프레임 갱신한다 (사람 감지/신호 확정과 무관하게 독립 호출).'''
+        self.emergency = is_blurred
+
+    def _reset_to_unknown(self, reason: str) -> None:
         self._streak_label, self._streak = None, 0
         self._low_conf_since = None
         if self.confirmed != "인식 불가":
             self.confirmed = "인식 불가"
             self.confirmed_idx = None
             print(f"확정: 인식 불가 ({reason}) → 안전 기본값(정지)")
-        self.emergency = emergency
 
-    def mark_person_absent(self, is_blurred: bool) -> None:
+    def mark_person_absent(self) -> None:
         '''윈도우 대부분에서 사람(포즈)이 안 잡힐 때 — 유예 없이 즉시 해제.
 
-        is_blurred가 True면 "사람이 없는 게 아니라 렌즈가 막혀서 아예 안 보이는"
-        경우일 수 있으므로 EMERGENCY로 표시한다(원인 구분은 정비 알림 목적).
+        사람이 안 보인다는 사실만 "인식 불가"로 보고하며, emergency는 건드리지 않는다.
         '''
         self.probs, self.top = None, None
-        self._reset_to_unknown("사람 미감지", emergency=is_blurred)
+        self._reset_to_unknown("사람 미감지")
         self.status = "사람 미감지"
 
-    def update(self, raw_probs: np.ndarray, labels: list[str], is_blurred: bool) -> None:
+    def update(self, raw_probs: np.ndarray, labels: list[str]) -> None:
         '''실제 예측 확률 하나로 안정화 필터를 한 스텝 진행한다.'''
         self.probs = raw_probs if self.probs is None else \
             self.ema * raw_probs + (1 - self.ema) * self.probs
@@ -127,24 +135,19 @@ class SignalStabilizer:
             if self._streak >= self.consecutive and self.confirmed != labels[self.top]:
                 self.confirmed = labels[self.top]
                 self.confirmed_idx = self.top
-                self.emergency = False
                 print(f"확정: {self.confirmed}  (신뢰도 {conf:.2f})")
         else:
-            # 해제는 유예를 두고 (히스테리시스) — 일시적 하락에 기계가 서지 않게.
-            # 단, 렌즈 블러가 실측으로 확인된 상태에서 인식까지 흔들리면 유예 없이 즉시 해제.
+            # 해제는 항상 유예를 두고 (히스테리시스) — 일시적 하락에 기계가 서지 않게.
             self._streak_label, self._streak = None, 0
             now = time.monotonic()
             if self.confirmed != "인식 불가":
-                if is_blurred:
-                    self._reset_to_unknown("렌즈 블러 + 인식 저하 [즉시]", emergency=True)
+                if self._low_conf_since is None:
+                    self._low_conf_since = now
+                remain = self.release_grace - (now - self._low_conf_since)
+                if remain > 0:
+                    self.status = f"신뢰 회복 대기 {remain:.1f}s (유지: {self.confirmed})"
                 else:
-                    if self._low_conf_since is None:
-                        self._low_conf_since = now
-                    remain = self.release_grace - (now - self._low_conf_since)
-                    if remain > 0:
-                        self.status = f"신뢰 회복 대기 {remain:.1f}s (유지: {self.confirmed})"
-                    else:
-                        self._reset_to_unknown("유예 초과", emergency=False)
+                    self._reset_to_unknown("유예 초과")
 
 
 def main() -> None:
@@ -200,6 +203,7 @@ def main() -> None:
     warning = HandWarning()  # 손이 연속으로 안 잡히면 화면에 이탈 경고
     lens_monitor = LensHealthMonitor()  # 렌즈 블러(김서림·물방울·분진) 진단
     stabilizer = SignalStabilizer(args.threshold, args.consecutive, args.ema, args.release_grace)
+    last_blur_log = 0.0  # EMERGENCY 오작동 디버깅용 — 아래 로그를 0.5초마다만 찍기 위한 타이머
 
     while True:
         frame, hand_result, pose_result = process_frame(cap, extractor, t0)
@@ -209,7 +213,17 @@ def main() -> None:
         draw_detections(frame, hand_result, pose_result)
         warning.update(hand_result)
         warning.draw(frame)
-        is_blurred = lens_monitor.update(frame)
+        is_blurred = lens_monitor.update(frame, hand_result)
+        # [디버그] EMERGENCY 오작동 재조사용 — 0.5초마다 선명도/기준치/손 감지 여부 출력.
+        # 원인 확인 후 이 블록을 지울 것.
+        now_dbg = time.monotonic()
+        if now_dbg - last_blur_log >= 0.5 and lens_monitor.baseline is not None:
+            pct = lens_monitor.ratio_ema / lens_monitor.baseline * 100
+            hp = bool(hand_result.hand_landmarks)
+            print(f"[블러 디버그] 선명도 {lens_monitor.ratio_ema:.0f} / 기준 {lens_monitor.baseline:.0f} "
+                  f"= {pct:.0f}%  hand_present={hp}  blur={is_blurred}")
+            last_blur_log = now_dbg
+        stabilizer.set_emergency(is_blurred)  # 사람 감지/신호 확정과 무관하게 매 프레임 독립 갱신
         window.append(FeatureExtractor.vector(hand_result, pose_result))
 
         if len(window) == num_frames:
@@ -218,7 +232,7 @@ def main() -> None:
             # 안전 가드: 윈도우 대부분에서 사람(포즈)이 안 잡히면 모델 판단을 신뢰하지 않는다
             pose_ratio = float((arr[:, HAND_DIM * 2 :] != 0).any(axis=1).mean())
             if pose_ratio < 0.3:
-                stabilizer.mark_person_absent(is_blurred)
+                stabilizer.mark_person_absent()
             else:
                 # --- 실제 예측 한 번 ---
                 # arr: (num_frames=30, 150) — PyTorch 모델은 항상 "배치 축"을 기대하므로
@@ -235,7 +249,7 @@ def main() -> None:
                     # .cpu().numpy(): GPU에 있었을 수도 있는 텐서를 CPU로 내리고 (numpy는 GPU 메모리를 다룰 줄 모름)
                     # numpy 배열로 바꾼 후 (EMA 평활, argmax 등)는 순수 numpy로 다룬다.
                     raw_probs = torch.softmax(model(x), dim=1)[0].cpu().numpy()
-                stabilizer.update(raw_probs, labels, is_blurred)
+                stabilizer.update(raw_probs, labels)
 
         # 확정 상태 전송: 상태가 바뀌면 즉시, 같으면 1초 주기 하트비트
         signal = labels[stabilizer.confirmed_idx] if stabilizer.confirmed_idx is not None else "unknown"
