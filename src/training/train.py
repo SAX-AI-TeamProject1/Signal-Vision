@@ -143,6 +143,11 @@ def main() -> None:
                         help="악조건 증강(도메인 랜덤화) 끄기 — 기본은 켜짐")
     args = parser.parse_args()
 
+    # 데이터 셔플/증강(np.random.default_rng(42))은 이미 시드 고정돼 있었지만, 모델 가중치
+    # 초기화는 PyTorch 자체의 별도 난수 생성기를 써서 그동안 고정된 적이 없었다 — 매 실행마다
+    # 결과가 달라져 재현·디버깅이 불가능했으므로 여기서 고정한다.
+    torch.manual_seed(42)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"데이터 로드: {args.data_dir}")
     X, y, labels = load_dataset(args.data_dir)

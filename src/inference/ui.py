@@ -20,9 +20,6 @@ FONT_CANDIDATES = {
     "Linux": ["/usr/share/fonts/truetype/nanum/NanumGothic.ttf"],
 }
 
-# 확률 패널 레이아웃
-BAR_X, BAR_TOP, BAR_W, BAR_H, BAR_GAP = 210, 120, 320, 30, 12
-
 def find_font() -> str | None:
     for path in FONT_CANDIDATES.get(platform.system(), []):
         if Path(path).exists():
@@ -60,18 +57,31 @@ def make_text_drawer():
 
 
 def draw_probability_panel(frame, labels, probs, top: int | None,
-                           confirmed_idx: int | None, threshold: float):
-    '''클래스별 확률 막대 패널을 그린다. 텍스트 항목 목록을 반환한다 (draw_text용).'''
-    panel_h = len(labels) * (BAR_H + BAR_GAP) + BAR_GAP
-    x0, y0 = 10, BAR_TOP - BAR_GAP
-    x1, y1 = BAR_X + BAR_W + 70, BAR_TOP + panel_h - BAR_GAP
+                           confirmed_idx: int | None, threshold: float, bar_top: int):
+    '''클래스별 확률 막대 패널을 그린다. 텍스트 항목 목록을 반환한다 (draw_text용).
+
+    화면 전체를 가리지 않도록 좌상단에 작게 그린다 — 패널 전체가 프레임 면적의 1/10 안팎
+    (가로 폭 기준 약 1/3)만 차지하도록 비율을 맞췄다. 퍼센트 숫자는 막대 폭을 따로 안 늘리려고
+    막대 오른쪽 끝 안쪽에 겹쳐 그린다. bar_top(패널 시작 y)은 헤더/상태 텍스트 높이를 감안해
+    Hud.render()가 미리 계산해서 넘긴다 — 서로 겹치지 않게 순서대로 배치하기 위함.
+    '''
+    h, w = frame.shape[:2]
+    bar_x = int(w * 0.16)
+    bar_w = int(w * 0.20)
+    bar_h = max(14, int(h * 0.025))
+    bar_gap = max(4, int(h * 0.008))
+    font_size = max(12, int(h * 0.028))
+
+    panel_h = len(labels) * (bar_h + bar_gap) + bar_gap
+    x0, y0 = 5, bar_top - bar_gap
+    x1, y1 = bar_x + bar_w + 8, bar_top + panel_h - bar_gap
     overlay = frame.copy()
     cv2.rectangle(overlay, (x0, y0), (x1, y1), (30, 30, 30), -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
 
     texts = []
     for i, label in enumerate(labels):
-        y = BAR_TOP + i * (BAR_H + BAR_GAP)
+        y = bar_top + i * (bar_h + bar_gap)
         p = float(probs[i]) if probs is not None else 0.0
         if confirmed_idx is not None and i == confirmed_idx:
             color = (0, 220, 0)      # 확정 = 초록
@@ -79,12 +89,12 @@ def draw_probability_panel(frame, labels, probs, top: int | None,
             color = (0, 180, 255)    # 현재 1위 = 주황
         else:
             color = (180, 130, 60)   # 나머지 = 파랑
-        cv2.rectangle(frame, (BAR_X, y), (BAR_X + BAR_W, y + BAR_H), (70, 70, 70), -1)
-        cv2.rectangle(frame, (BAR_X, y), (BAR_X + int(BAR_W * p), y + BAR_H), color, -1)
-        tx = BAR_X + int(BAR_W * threshold)
-        cv2.line(frame, (tx, y - 3), (tx, y + BAR_H + 3), (255, 255, 255), 1)  # 임계값선
-        texts.append((label, (20, y + 2), color, 24))
-        texts.append((f"{p * 100:4.0f}%", (BAR_X + BAR_W + 10, y + 2), (230, 230, 230), 24))
+        cv2.rectangle(frame, (bar_x, y), (bar_x + bar_w, y + bar_h), (70, 70, 70), -1)
+        cv2.rectangle(frame, (bar_x, y), (bar_x + int(bar_w * p), y + bar_h), color, -1)
+        tx = bar_x + int(bar_w * threshold)
+        cv2.line(frame, (tx, y - 2), (tx, y + bar_h + 2), (255, 255, 255), 1)  # 임계값선
+        texts.append((label, (6, y), color, font_size))
+        texts.append((f"{p * 100:3.0f}%", (bar_x + bar_w - 34, y), (240, 240, 240), font_size))
     return texts
 
 def draw_emergency_toast(frame):
@@ -109,8 +119,20 @@ class Hud:
               threshold: float, header: str, header_color, status: str,
               status_color=(200, 200, 200), emergency : bool = False) -> bool:
         """프레임에 확률 패널 + 헤더/상태 텍스트를 그려 창에 표시한다. 반환: 종료 요청 여부(q/ESC)."""
-        panel_texts = draw_probability_panel(frame, labels, probs, top, confirmed_idx, threshold)
-        texts = [(header,(10,10),header_color,40),(status,(10,62),status_color,24),*panel_texts]
+        h = frame.shape[0]
+        # 헤더 → 상태 → 패널 순서로, 각 줄의 실제 높이(폰트 크기 * 1.3, 한글 하강부 포함 여유)를
+        # 감안해 다음 줄 y를 계산한다 — 해상도가 달라져도 서로 겹치지 않는다.
+        margin = max(6, int(h * 0.015))
+        header_size = max(22, int(h * 0.075))
+        status_size = max(14, int(h * 0.035))
+        header_y = margin
+        status_y = header_y + int(header_size * 1.3) + margin
+        panel_top = status_y + int(status_size * 1.3) + margin
+
+        panel_texts = draw_probability_panel(frame, labels, probs, top, confirmed_idx, threshold, panel_top)
+        texts = [(header, (10, header_y), header_color, header_size),
+                (status, (10, status_y), status_color, status_size),
+                *panel_texts]
         if emergency:
             texts += draw_emergency_toast(frame)
         frame = self._draw_text(frame,texts)
