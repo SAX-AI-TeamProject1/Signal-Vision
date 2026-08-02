@@ -219,6 +219,7 @@ __marimo__/
 
 # Asset
 [aA]sset/
+[aA]sset_*/
 
 models/*.task
 
