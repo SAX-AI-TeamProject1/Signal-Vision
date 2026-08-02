@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-08-02
 
 '''
     collect.py
@@ -135,7 +135,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="수신호 특징 시퀀스 수집 (자동 연속)")
     parser.add_argument("--label", default=None,
                         help="수신호 라벨 (예: stop). 생략하면 번호로 고르는 메뉴가 뜬다")
-    parser.add_argument("--samples", type=int, default=30, help="수집할 시퀀스 개수")
+    parser.add_argument("--samples", type=int, default=90, help="수집할 시퀀스 개수")
     parser.add_argument("--frames", type=int, default=30, help="시퀀스당 프레임 수")
     parser.add_argument("--prep", type=float, default=1.5, help="녹화 전 준비 시간(초)")
     parser.add_argument("--idle", action="store_true",
