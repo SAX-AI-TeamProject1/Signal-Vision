@@ -235,6 +235,78 @@
             "problemMatcher": []
         },
         {
+            "label": "실행: 신뢰도 로그 기록 (발표 시각화용)",
+            "type": "shell",
+            "osx": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--hand-confidence", "${input:handConfidence}",
+                    "--log-probs",
+                    "--log-tag", "${input:logTag}",
+                    "--log-delay", "${input:logDelay}",
+                    "--log-seconds", "${input:logSeconds}"
+                ]
+            },
+            "linux": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--hand-confidence", "${input:handConfidence}",
+                    "--log-probs",
+                    "--log-tag", "${input:logTag}",
+                    "--log-delay", "${input:logDelay}",
+                    "--log-seconds", "${input:logSeconds}"
+                ]
+            },
+            "windows": {
+                "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+                "args": [
+                    "-m",
+                    "src.inference.predict",
+                    "--hand-confidence", "${input:handConfidence}",
+                    "--log-probs",
+                    "--log-tag", "${input:logTag}",
+                    "--log-delay", "${input:logDelay}",
+                    "--log-seconds", "${input:logSeconds}"
+                ]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "실행: 신뢰도 그래프 생성 (logs → PNG)",
+            "type": "shell",
+            "osx": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": ["-m", "src.tools.plot_probs"]
+            },
+            "linux": {
+                "command": "${workspaceFolder}/.venv/bin/python",
+                "args": ["-m", "src.tools.plot_probs"]
+            },
+            "windows": {
+                "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+                "args": ["-m", "src.tools.plot_probs"]
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "실행: 실시간 추론 + rosbridge 발행 (Signal-Simulation 연동)",
             "type": "shell",
             "osx": {
@@ -352,6 +424,25 @@
             "type": "promptString",
             "description": "Signal-Simulation의 rosbridge 웹소켓 주소 (같은 리눅스 머신이면 기본값 그대로 두면 됨)",
             "default": "ws://localhost:9090"
+        },
+        {
+            "id": "logTag",
+            "type": "pickString",
+            "description": "지금 수행할 수신호 (CSV 파일명·tag 열에 들어간다 — 라벨 하나씩 바꿔가며 반복 실행)",
+            "options": ["stop", "slow", "come", "back", "left_go", "right_go", "idle"],
+            "default": "stop"
+        },
+        {
+            "id": "logDelay",
+            "type": "promptString",
+            "description": "기록 시작 전 준비 시간(초) — 카메라가 뜨고 확률이 나오기 시작한 뒤부터 카운트다운",
+            "default": "3"
+        },
+        {
+            "id": "logSeconds",
+            "type": "promptString",
+            "description": "기록할 시간(초) — 이만큼 기록하면 자동 종료된다",
+            "default": "3"
         },
         {
             "id": "handConfidence",

@@ -220,6 +220,9 @@ __marimo__/
 # Asset
 [aA]sset/
 
+# 추론 확률 로그 (--log-probs 기본 출력 위치)
+logs/
+
 models/*.task
 
 CLAUDE.md

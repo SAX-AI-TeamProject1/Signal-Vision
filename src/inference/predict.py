@@ -33,6 +33,7 @@ from src.capture.extractor import (
     process_frame,
 )
 from src.inference.ui import Hud # 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
+from src.inference.prob_log import ProbabilityLogger, default_log_path # 프레임별 확률 CSV 기록 (발표 시각화용)
 from src.inference.publish import make_publisher
 from src.training.train import SignLSTM
 
@@ -179,6 +180,18 @@ def main() -> None:
     parser.add_argument("--udp-port", type=int, default=5555)
     parser.add_argument("--rosbridge-url", default="ws://localhost:9090")
     parser.add_argument("--ros-topic", default="/hand_signal")
+    # --- 발표 시각화용 확률 로깅 (기록만 하고 그래프는 별도 디렉토리에서 그린다) ---
+    parser.add_argument("--log-probs", nargs="?", const="", default=None, metavar="CSV_PATH",
+                        help="프레임마다 라벨별 신뢰도를 CSV로 기록한다. 경로를 생략하면 "
+                             "프로젝트 루트의 logs/ 아래에 자동으로 만든다")
+    parser.add_argument("--log-tag", default="",
+                        help="기록에 붙일 태그 — 지금 수행 중인 수신호 이름을 넣으면 CSV의 tag 열에 들어간다")
+    parser.add_argument("--log-seconds", type=float, default=None,
+                        help="이 시간(초)만큼만 기록하고 자동 종료 (예: 수신호당 3초)")
+    parser.add_argument("--log-delay", type=float, default=0.0,
+                        help="확률이 나오기 시작한 뒤 기록을 시작하기까지의 준비 시간(초)")
+    parser.add_argument("--log-console", action="store_true",
+                        help="CSV와 별개로 콘솔에도 프레임마다 라벨별 신뢰도를 출력")
     args = parser.parse_args()
 
     # GPU(cuda)가 있으면 그쪽에서 추론(빠름), 없으면 CPU로 폴백 — 이후 모델과 입력 텐서를
@@ -201,6 +214,12 @@ def main() -> None:
     lens_monitor = LensHealthMonitor()  # 렌즈 블러(김서림·물방울·분진) 진단
     stabilizer = SignalStabilizer(args.threshold, args.consecutive, args.ema, args.release_grace)
 
+    logger: ProbabilityLogger | None = None
+    if args.log_probs is not None:
+        log_path = Path(args.log_probs) if args.log_probs else default_log_path(ROOT, args.log_tag)
+        logger = ProbabilityLogger(log_path, labels, tag=args.log_tag, duration=args.log_seconds,
+                                   delay=args.log_delay, console=args.log_console)
+
     while True:
         frame, hand_result, pose_result = process_frame(cap, extractor, t0)
         if frame is None:
@@ -212,6 +231,7 @@ def main() -> None:
         is_blurred = lens_monitor.update(frame)
         window.append(FeatureExtractor.vector(hand_result, pose_result))
 
+        raw_probs: np.ndarray | None = None  # 이 프레임의 원본(평활 전) 확률 — 로깅용, 예측이 없으면 None
         if len(window) == num_frames:
             arr = np.stack(window)
 
@@ -237,6 +257,10 @@ def main() -> None:
                     raw_probs = torch.softmax(model(x), dim=1)[0].cpu().numpy()
                 stabilizer.update(raw_probs, labels, is_blurred)
 
+        if logger is not None:
+            # 사람 미감지 프레임도 그대로 남긴다 — 확률 칸이 비어 그래프에 끊긴 구간으로 보인다
+            logger.log(stabilizer.probs, raw_probs, stabilizer.confirmed, stabilizer.status)
+
         # 확정 상태 전송: 상태가 바뀌면 즉시, 같으면 1초 주기 하트비트
         signal = labels[stabilizer.confirmed_idx] if stabilizer.confirmed_idx is not None else "unknown"
         now = time.monotonic()
@@ -247,15 +271,21 @@ def main() -> None:
             last_sent = (signal, now)
 
         header_color = (0, 220, 0) if stabilizer.confirmed_idx is not None else (80, 80, 255)
+        status = stabilizer.status + (logger.status_text() if logger is not None else "")
         if hud.render(frame, labels, stabilizer.probs, stabilizer.top, stabilizer.confirmed_idx, args.threshold,
-                      header=f"확정: {stabilizer.confirmed}", header_color=header_color, status=stabilizer.status,
+                      header=f"확정: {stabilizer.confirmed}", header_color=header_color, status=status,
                       emergency=stabilizer.emergency):
             break
+
+        if logger is not None and logger.finished:
+            break  # --log-seconds만큼 기록을 마쳤으면 루프 종료 (수신호별 한 번씩 돌리는 워크플로)
 
     cap.release()
     hud.close()
     extractor.close()
     publisher.close()
+    if logger is not None:
+        logger.close()
 
 
 if __name__ == "__main__":
