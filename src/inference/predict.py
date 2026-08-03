@@ -27,6 +27,7 @@ from src.capture.extractor import (
     FeatureExtractor,
     HandWarning,
     LensHealthMonitor,
+    choose_camera_index,
     draw_detections,
     open_camera,
     process_frame,
@@ -159,6 +160,11 @@ def main() -> None:
     '''
     parser = argparse.ArgumentParser(description="실시간 수신호 추론")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--camera", type=int, default=None,
+                        help="사용할 카메라 인덱스 (생략하면 연결된 카메라 중에서 고르는 메뉴가 뜬다)")
+    parser.add_argument("--hand-confidence", type=float, default=0.4,
+                        help="손 검출 신뢰도 임계값 (기본 0.5). 낮출수록 장갑 등으로 윤곽이 흐릿해도 "
+                             "더 잘 잡지만 오검출·지터가 늘어난다")
     parser.add_argument("--threshold", type=float, default=0.8,
                         help="확정에 필요한 최소 신뢰도")
     parser.add_argument("--consecutive", type=int, default=5,
@@ -185,8 +191,8 @@ def main() -> None:
     publisher = make_publisher(args.publish, udp_host=args.udp_host, udp_port=args.udp_port,
                                rosbridge_url=args.rosbridge_url, ros_topic=args.ros_topic)
     hud = Hud()  # 확률 패널·텍스트·창 표시 전담 (predict.py는 이 객체에만 그리기를 위임)
-    extractor = FeatureExtractor()  # 손+포즈 랜드마커 → 150차원 특징 벡터
-    cap = open_camera()
+    extractor = FeatureExtractor(hand_confidence=args.hand_confidence)  # 손+포즈 랜드마커 → 150차원 특징 벡터
+    cap = open_camera(choose_camera_index(args.camera))
     t0 = time.monotonic()  # VIDEO 모드 타임스탬프(process_frame)의 기준 시각
     last_sent: tuple[str, float] = ("", 0.0)  # (마지막 전송 신호, 전송 시각) — 하트비트 주기 판단용
 

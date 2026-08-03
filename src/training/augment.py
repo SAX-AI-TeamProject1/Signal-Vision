@@ -80,27 +80,26 @@ def augment_sequence(seq: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         pts[..., 0][present] += offset[0]
         pts[..., 1][present] += offset[1]
 
-    # 스케일 (카메라 거리 변화) — 화면 중앙(0.5, 0.5)을 기준점으로 삼아 확대/축소.
-    # 기준점이 원점(0,0)이 아니라 0.5인 이유: 정규화 좌표는 화면 중앙이 (0.5,0.5)라,
-    # 원점 기준으로 스케일하면 몸 전체가 화면 구석으로 쏠려버린다.
+    # 스케일 (카메라 거리 변화) — 원점(어깨 중심, 0)을 기준점으로 삼아 확대/축소.
+    # extractor.py가 좌표를 화면 절대좌표가 아니라 어깨 중심 기준 상대 좌표로 정규화하므로
+    # (doc/data_collection_log.md 2026-07-29 #1), 기준점도 화면 중앙(0.5)이 아니라 0이어야
+    # 한다. x/y/z 전부 이미 같은 원점 기준이라 축 구분 없이 배율만 곱하면 된다.
     if rng.random() < P_SCALE:
         s = rng.uniform(*SCALE_RANGE)
-        for axis in (0, 1):
-            vals = pts[..., axis]
-            vals[present] = (vals[present] - 0.5) * s + 0.5
-        pts[..., 2][present] *= s  # z(깊이)는 화면 기준점이 없으므로 그대로 배율만 곱함
+        pts[present] *= s
 
-    # 렌즈 왜곡 (배럴/핀쿠션): r' = r(1 + k·r²), 화면 중앙 기준 극좌표 반경(r)을 왜곡시키는 공식.
+    # 렌즈 왜곡 (배럴/핀쿠션): r' = r(1 + k·r²), 어깨 중심 기준 극좌표 반경(r)을 왜곡시키는 공식.
     # k>0이면 바깥으로 갈수록 더 밀려나는 배럴 왜곡, k<0이면 반대(핀쿠션)를 흉내낸다.
-    # r²는 화면 안 최대 반경(0.5)으로 제한 — 화면 밖 추정 지점(예: 골반)이
-    # 과하게 증폭되는 것을 막는다 (실제 렌즈 왜곡은 화면 안 현상).
+    # 스케일 증강과 같은 이유로 기준점은 화면 중앙(0.5)이 아니라 원점(어깨 중심, 0)이다.
+    # r² 상한(0.5)은 예전 화면 절대좌표(0~1) 기준으로 정한 값이라 새 좌표 스케일(어깨너비 단위)
+    # 에서도 적절한지는 미검증 — 필요하면 나중에 재튜닝 (doc/data_collection_log.md 참고).
     if rng.random() < P_DISTORT:
         k = rng.uniform(-DISTORT_K, DISTORT_K)
-        dx = pts[..., 0] - 0.5
-        dy = pts[..., 1] - 0.5
+        dx = pts[..., 0]
+        dy = pts[..., 1]
         factor = 1.0 + k * np.minimum(dx * dx + dy * dy, 0.5)
-        pts[..., 0][present] = (dx * factor + 0.5)[present]
-        pts[..., 1][present] = (dy * factor + 0.5)[present]
+        pts[..., 0][present] = (dx * factor)[present]
+        pts[..., 1][present] = (dy * factor)[present]
 
     # 손 소실 (연기·가림·순간 감지 실패): 무작위로 고른 몇 개 프레임에서 손 블록(앞 42포인트)만
     # 통째로 0으로 지운다 — 실제로 MediaPipe가 그 프레임에서 손을 놓쳤을 때와 같은 모양이 되게.

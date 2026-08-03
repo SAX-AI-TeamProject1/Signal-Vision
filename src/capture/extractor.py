@@ -14,6 +14,13 @@
         — 골반 포함으로 어깨-골반 상대 관계(상반신 회전)를 표현할 수 있다.
         감지 안 된 손/포즈는 0으로 채움.
 
+        좌표는 화면(카메라 프레임) 기준 절대 좌표가 아니라, 어깨 중심(랜드마크 11·12 중점)을
+        원점으로 한 상대 좌표를 어깨너비로 나눠 스케일까지 정규화한 값이다 — 그렇지 않으면
+        데이터가 적을 때 모델이 "동작의 모양"이 아니라 "화면 어디서 시작했는지"라는 훨씬 쉬운
+        지름길을 학습해버린다 (예: 항상 화면 오른쪽에서 시작하면 동작과 무관하게 매번 같은
+        라벨로 분류됨). 포즈가 감지되지 않아 원점을 잡을 수 없으면 정규화를 건너뛰고 원본
+        좌표를 그대로 쓴다 (드문 경우이며, 없는 것보다는 낫다).
+
     목장갑 등으로 손 랜드마크가 불안정한 환경에서도 포즈(팔 궤적)는 몸 전체
     스케일로 추정되어 상대적으로 강인하다 (doc/design.md 참고).
 
@@ -80,15 +87,19 @@ def ensure_hand_model() -> Path:
 def ensure_pose_model() -> Path:
     return _ensure_model(POSE_MODEL_PATH, POSE_MODEL_URL, "포즈")
 
-def create_hand_landmarker(running_mode=vision.RunningMode.VIDEO):
-    '''손 랜드마커를 생성한다 (뷰어·특징 추출기가 동일한 옵션을 공유).'''
+def create_hand_landmarker(running_mode=vision.RunningMode.VIDEO, min_confidence: float = 0.5):
+    '''손 랜드마커를 생성한다 (뷰어·특징 추출기가 동일한 옵션을 공유).
+
+    min_confidence: 손 검출/존재/추적 신뢰도 임계값 (세 옵션에 동일하게 적용).
+    낮출수록 장갑 낀 손처럼 윤곽이 흐릿한 경우도 더 잘 잡지만, 오검출·지터도 늘어난다.
+    '''
     options = vision.HandLandmarkerOptions(
         base_options=mp_tasks.BaseOptions(model_asset_path=str(ensure_hand_model())),
         running_mode=running_mode,  # 연속 프레임 입력을 전제로 하는 모드 (타임스탬프 필요)
         num_hands=2,  # 양손 모두 추적
-        min_hand_detection_confidence=0.5,
-        min_hand_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_hand_detection_confidence=min_confidence,
+        min_hand_presence_confidence=min_confidence,
+        min_tracking_confidence=min_confidence,
     )
     return vision.HandLandmarker.create_from_options(options)
 
@@ -136,8 +147,8 @@ class FeatureExtractor:
     두 모델 검출 결과를 위 FEATURE_DIM 포맷의  150차원 특징 벡터로 변환해준다.
     VIDEO 모드
     '''
-    def __init__(self) -> None:
-        self.hands = create_hand_landmarker()
+    def __init__(self, hand_confidence: float = 0.5) -> None:
+        self.hands = create_hand_landmarker(min_confidence=hand_confidence)
         self.pose = create_pose_landmarker()
 
     def detect(self, bgr_frame, timestamp_ms: int):
@@ -148,22 +159,49 @@ class FeatureExtractor:
         )
 
     @staticmethod
+    def _reference_frame(pose_lms) -> tuple[np.ndarray, float] | None:
+       
+        if pose_lms is None:
+            return None
+        l_sh = np.array([pose_lms[11].x, pose_lms[11].y, pose_lms[11].z], dtype=np.float32)  # 왼쪽 어깨
+        r_sh = np.array([pose_lms[12].x, pose_lms[12].y, pose_lms[12].z], dtype=np.float32)  # 오른쪽 어깨
+        origin = (l_sh + r_sh) / 2  # 두 어깨의 중점 = 몸통 중심선 위의 기준점
+        # z(깊이)는 원근에 따라 안정성이 떨어지므로 스케일 계산에는 화면 평면(x, y)만 사용
+        scale = float(np.linalg.norm(r_sh[:2] - l_sh[:2]))
+        if scale < 1e-6:
+            return None
+        return origin, scale
+
+    @staticmethod
     def vector(hand_result, pose_result) -> np.ndarray:
         # 검출 결과 → (150,) 벡터. 왼손 | 오른손 | 상체 포즈 순.
         vec = np.zeros(FEATURE_DIM, dtype=np.float32)
+
+        # 이번 프레임의 정규화 기준을 한 번만 계산해서 손·포즈 좌표 변환에 공통으로 사용한다
+        # (손과 포즈가 서로 다른 기준으로 정규화되면 상대적 위치 관계가 깨지기 때문).
+        pose_lms = pose_result.pose_landmarks[0] if pose_result.pose_landmarks else None  # 인물 1명 기준, 첫 검출만 사용
+        frame = FeatureExtractor._reference_frame(pose_lms)
+        # 기준을 못 구했으면 origin=0, scale=1로 두어 사실상 "정규화 없음"(원본 좌표 그대로)과
+        # 동일하게 동작시킨다 — 별도 분기 없이 아래 수식 하나로 정규화 여부를 모두 처리하기 위함.
+        origin, scale = frame if frame is not None else (np.zeros(3, dtype=np.float32), 1.0)
+
         for hand_lms, handedness in zip(hand_result.hand_landmarks, hand_result.handedness):
             slot = 0 if handedness[0].category_name == "Left" else 1  # 왼손=0번 슬롯, 오른손=1번 슬롯
-            # 관절 21개 × (x, y, z) → 63개짜리 1차원 배열로 펼침 (flatten)
-            coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms], dtype=np.float32).flatten()
-            vec[slot * HAND_DIM : (slot + 1) * HAND_DIM] = coords
-        if pose_result.pose_landmarks:
-            pose_lms = pose_result.pose_landmarks[0]  # 인물 1명 기준, 첫 번째 검출만 사용
-            # 상체 8관절만 골라 (x, y, z) 순으로 펼쳐 24개짜리 배열을 만듦
+            # 관절 21개 × (x, y, z) → 어깨 중심 기준 상대 좌표로 변환(평행이동+스케일 정규화) 후
+            # 63개짜리 1차원 배열로 펼침(flatten)
+            coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms], dtype=np.float32)
+            coords = (coords - origin) / scale
+            vec[slot * HAND_DIM : (slot + 1) * HAND_DIM] = coords.flatten()
+        if pose_lms is not None:
+            # 상체 8관절만 골라 (x, y, z) 순으로 펼쳐 24개짜리 배열을 만듦.
+            # 손과 동일한 origin/scale로 정규화해야 "어깨 대비 손목이 얼마나 벌어졌는지" 같은
+            # 손-포즈 간 상대 관계가 유지된다.
             coords = np.array(
                 [[pose_lms[j].x, pose_lms[j].y, pose_lms[j].z] for j in UPPER_BODY_JOINTS],
                 dtype=np.float32,
-            ).flatten()
-            vec[HAND_DIM * 2 :] = coords  # 벡터 뒤쪽 24차원 = 상체 포즈
+            )
+            coords = (coords - origin) / scale
+            vec[HAND_DIM * 2 :] = coords.flatten()  # 벡터 뒤쪽 24차원 = 상체 포즈
         return vec
 
     def close(self) -> None:
@@ -198,6 +236,7 @@ def draw_detections(frame, hand_result, pose_result) -> None:
     draw_pose(frame, pose_result)
 
 
+
 def process_frame(cap: cv2.VideoCapture, extractor: "FeatureExtractor", t0: float):
     '''프레임 1장을 읽어 검출까지 수행 (수집·추론 공용). 
     반환: (frame, 손결과, 포즈결과) 또는 (None,)*3.
@@ -213,21 +252,55 @@ def process_frame(cap: cv2.VideoCapture, extractor: "FeatureExtractor", t0: floa
     return frame, hand_result, pose_result
 
 
-# OS별 백엔드 웹캠
-def open_camera(index: int = 0) -> cv2.VideoCapture:
+def _camera_backend() -> int:
     system = platform.system()
     if system == "Windows":
-        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-    elif system == "Darwin":  # macOS
-        cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
-    else:
-        cap = cv2.VideoCapture(index)
+        return cv2.CAP_DSHOW
+    if system == "Darwin":  # macOS
+        return cv2.CAP_AVFOUNDATION
+    return cv2.CAP_ANY
+
+
+# OS별 백엔드 웹캠
+def open_camera(index: int = 0) -> cv2.VideoCapture:
+    cap = cv2.VideoCapture(index, _camera_backend())
     if not cap.isOpened():
         raise RuntimeError(
             f"카메라 {index}번을 열 수 없습니다. "
             "다른 앱이 카메라를 사용 중인지, OS 카메라 권한이 허용되어 있는지 확인하세요."
         )
     return cap
+
+
+def list_cameras(max_index: int = 5) -> list[int]:
+    '''0부터 max_index-1까지 순서대로 열어봐서 실제로 연결된 카메라 인덱스만 반환한다.'''
+    backend = _camera_backend()
+    found = []
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i, backend)
+        if cap.isOpened():
+            found.append(i)
+        cap.release()
+    return found
+
+
+def choose_camera_index(preset: int | None = None) -> int:
+    '''연결된 카메라가 여러 대면 번호를 골라 선택하게 한다. 한 대뿐이면 그걸 바로 쓴다.'''
+    if preset is not None:
+        return preset
+    found = list_cameras()
+    if not found:
+        return 0  # 못 찾아도 0번으로 시도 (open_camera가 실패 시 에러 메시지로 안내)
+    if len(found) == 1:
+        return found[0]
+    print("연결된 카메라가 여러 개 감지됐습니다:")
+    for i in found:
+        print(f"  {i}. 카메라 {i}")
+    while True:
+        choice = input("사용할 카메라 번호 입력: ").strip()
+        if choice.isdigit() and int(choice) in found:
+            return int(choice)
+        print("목록에 없는 번호입니다.")
 
 
 # 손 이탈 경고: 연속 미감지가 이 프레임 수를 넘으면 화면을 빨갛게 깜빡인다
