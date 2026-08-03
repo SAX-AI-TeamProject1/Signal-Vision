@@ -40,7 +40,7 @@ from src.dataset.ui import WINDOW, ButtonBar, show
 DATA_DIR = Path(__file__).resolve().parents[2] / "asset"
 MIN_DETECTED_RATIO = 0.5  # 손 감지 프레임이 이 비율 미만이면 SKIP
 
-KNOWN_LABELS = ["stop", "slow", "come", "back", "left_go", "right_go", "idle"] # 신호수집 라벨
+KNOWN_LABELS = ["stop","left_go", "right_go", "idle"] # 신호수집 라벨
 
 def choose_label(preset: str | None) -> str:
     '''label을 줬으면 그대로 쓰되, 알려진 목록(KNOWN_LABELS)에 없으면 오타일 수 있다고
