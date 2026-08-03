@@ -206,10 +206,14 @@ def main() -> None:
         if frame is None:
             print("프레임을 읽지 못했습니다. 종료합니다.")
             break
+        # draw_detections보다 반드시 먼저 측정한다 — 스켈레톤 선/경고 오버레이가 그려진
+        # 뒤에 재면 그 인공적인 고대비 선 때문에 선명도가 실측보다 크게 부풀려져(실측
+        # 평균 +157%, 최대 +197%) 실제 렌즈 블러(김서림 등)를 못 잡을 수 있다.
+        is_blurred = lens_monitor.update(frame)
         draw_detections(frame, hand_result, pose_result)
         warning.update(hand_result)
         warning.draw(frame)
-        is_blurred = lens_monitor.update(frame)
+
         window.append(FeatureExtractor.vector(hand_result, pose_result))
 
         if len(window) == num_frames:
