@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-08-06
 
 '''
 predict.py의 화면 표시(HUD) 전담 — 한글 오버레이 텍스트, 클래스별 확률 막대 패널, 창 표시/키 입력을 다룬다.
@@ -11,6 +11,34 @@ import cv2
 import numpy as np
 
 WINDOW = "Sign Inference"
+
+# 화면이 표시할 상태는 이 셋뿐이고, 서로 겹치지 않는다 (SignalStabilizer.display_state).
+#
+#   emergency — 렌즈 이상(lens_fault). 이미지 자체를 믿을 수 없으니 즉시정지 + 정비 알림.
+#   confirmed — 라벨이 확정됐고 그게 명령이 있는 라벨이다. 그대로 주행.
+#   waiting   — 그 밖의 전부: 버퍼 채우는 중 / 사람 미감지 / 미확정 / 확정된 게 idle.
+#               로봇은 서 있지만 이건 고장이 아니라 "아직 신호가 없다"는 뜻이다.
+#
+# 왜 waiting 을 따로 두는가: 예전에는 이 상태가 빨간 "인식 불가"로 떠서, 신호를 안 주고
+# 서 있는 정상 상태와 렌즈가 막힌 비상 상태가 화면에서 똑같아 보였다. 그래서 EMERGENCY 가
+# "인식이 되냐 안 되냐"로 뜨는 것처럼 읽혔다. 색과 문구를 갈라 그 혼동을 없앤다.
+NO_SIGNAL_TEXT = "인식 대기중"
+
+_HEADER_BY_STATE = {
+    "emergency": ("비상정지: 렌즈 이상", (0, 0, 255)),      # 빨강 — 유일한 고장 상태
+    "waiting": (NO_SIGNAL_TEXT, (0, 200, 255)),            # 주황 — 정상이지만 명령 없음
+}
+
+
+def header_for(state: str, confirmed: str) -> tuple[str, tuple[int, int, int]]:
+    '''표시 상태 → (헤더 문구, BGR 색). 호출부 세 곳이 같은 규칙을 쓰게 한 곳에 모은다.
+
+    predict.py(CLI)·function.py(임베드)·camera_node/inference.py(ROS) 가 각자
+    3분기를 복사해 두면 한쪽만 고쳐져 화면 뜻이 갈라진다.
+    '''
+    if state == "confirmed":
+        return f"확정: {confirmed}", (0, 220, 0)
+    return _HEADER_BY_STATE[state]
 
 # 한글 오버레이용 폰트 (OS별) — cv2.putText는 한글을 못 그리므로 PIL 사용
 FONT_CANDIDATES = {

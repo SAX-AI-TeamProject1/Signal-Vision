@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-08-06
 '''
 외부(ROS 노드 등)에서 이 파일 하나만 import해서 추론/GUI를 호출할 수 있게 묶은 진입점.
 
@@ -24,14 +24,17 @@ import torch
 from ..capture.extractor import (
     HAND_DIM,
     FeatureExtractor,
+    FrameLivenessMonitor,
     HandWarning,
     LensHealthMonitor,
+    NO_POSE_FRAMES,
     draw_detections,
+    quality_status_text,
     open_camera,
     process_frame,
 )
 from .predict import DEFAULT_MODEL_PATH, SignalStabilizer, load_model
-from .ui import Hud
+from .ui import Hud, header_for
 
 
 class _Runtime:
@@ -46,6 +49,9 @@ class _Runtime:
         self.hud = Hud()
         self.warning = HandWarning()
         self.lens_monitor = LensHealthMonitor()
+        self.liveness = FrameLivenessMonitor()
+        self.frozen = False
+        self.no_pose = 0
         self.stabilizer = SignalStabilizer(threshold, consecutive, ema, release_grace)
         self.window: deque[np.ndarray] = deque(maxlen=self.num_frames)
         self.t0 = time.monotonic()
@@ -56,23 +62,32 @@ class _Runtime:
         if frame is None:
             return "unknown", 0.0
 
+        # 선명도 측정은 반드시 그리기 **전에** — 스켈레톤 선·경고 오버레이는 인공적인
+        # 고대비 엣지라 그 뒤에 재면 선명도가 실측보다 크게 부풀려지고(predict.py 실측
+        # 평균 +157%), 사람이 잡히는 동안에는 렌즈가 흐려져도 판정이 안 뜬다.
+        poor_quality = self.lens_monitor.update(frame)
+        self.frozen = self.liveness.update(frame)
         draw_detections(frame, hand_result, pose_result)
         self.warning.update(hand_result)
         self.warning.draw(frame)
-        is_blurred = self.lens_monitor.update(frame)
         self.window.append(FeatureExtractor.vector(hand_result, pose_result))
+        self.no_pose = 0 if pose_result.pose_landmarks else self.no_pose + 1
 
         if len(self.window) == self.num_frames:
             arr = np.stack(self.window)
             # 안전 가드: 윈도우 대부분에서 사람(포즈)이 안 잡히면 모델 판단을 신뢰하지 않는다
             pose_ratio = float((arr[:, HAND_DIM * 2:] != 0).any(axis=1).mean())
-            if pose_ratio < 0.3:
-                self.stabilizer.mark_person_absent(is_blurred)
+            if pose_ratio < 0.3 or (poor_quality and self.no_pose >= NO_POSE_FRAMES):
+                # 사람 미검출 + 화질 이상 = 비상. 화질이 멀쩡하면 그냥 대기다.
+                self.stabilizer.mark_person_absent(self.frozen or poor_quality)
             else:
                 x = torch.from_numpy(arr[None]).to(self.device)
                 with torch.no_grad():
                     raw_probs = torch.softmax(self.model(x), dim=1)[0].cpu().numpy()
-                self.stabilizer.update(raw_probs, self.labels, is_blurred)
+                # 관절이 잡힌다 = 대체로 인식이 되고 있으므로 화질 저하는 넘기지 않는다.
+                # 화면 정지·치명적 선명도 저하만 예외 — 관절이 잡혀도 못 믿는 경우다.
+                self.stabilizer.update(raw_probs, self.labels,
+                                       self.frozen or self.lens_monitor.critical)
 
         self._last_frame = frame
         idx = self.stabilizer.confirmed_idx
@@ -85,11 +100,12 @@ class _Runtime:
         if self._last_frame is None:
             return False
         idx = self.stabilizer.confirmed_idx
-        header_color = (0, 220, 0) if idx is not None else (80, 80, 255)
+        header, header_color = header_for(self.stabilizer.display_state, self.stabilizer.confirmed)
         return self.hud.render(
             self._last_frame, self.labels, self.stabilizer.probs, self.stabilizer.top, idx,
-            self.stabilizer.threshold, header=f"확정: {self.stabilizer.confirmed}",
-            header_color=header_color, status=self.stabilizer.status,
+            self.stabilizer.threshold, header=header, header_color=header_color,
+            status=f"{self.stabilizer.status}  |  "
+                   f"{quality_status_text(self.lens_monitor, self.frozen)}",
             emergency=self.stabilizer.emergency,
         )
 

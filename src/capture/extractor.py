@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-08-06
 
 '''
     공용 특징 추출기: 양손 랜드마크 + 상체 포즈 → 고정 크기 벡터.
@@ -307,8 +307,95 @@ def choose_camera_index(preset: int | None = None) -> int:
 WARN_AFTER_MISSES = 5
 
 BLUR_CALIBRATION_FRAMES = 30    # 시작 후 이 프레임 수 동안 "정상 화질" 기준치를 캘리브레이션(보간)
-BLUR_RATIO_DROP = 0.5           # 기준치 대비 이 비율 밑으로 떨어지면 블러(김서림 등)로 판정
 BLUR_HIGH_FREO_FRAC = 0.5       # 화면 반경 중 바깥쪽 몇 %를 "고주파(잔 디테일)"로 볼지
+
+# 프레임을 이 비율로 줄인 뒤 다시 선명도를 잰다 = "거친 스케일의 장면 구조".
+# 축소(INTER_AREA)가 영역 평균이라 물방울·먼지·센서 노이즈처럼 작은 것들을 지워 버리므로,
+# 그 밑에 장면이 남아 있는지가 드러난다.
+STRUCTURE_SCALE = 0.25
+
+# ══ 이 값들은 "비상"을 혼자 결정하지 않는다 ═══════════════════════════════════════
+#
+# 아래 임계값들은 "화질에 이상이 있다"까지만 판정한다. 비상으로 올릴지는 호출부가
+# **인식이 실제로 되고 있는지와 함께** 결정한다:
+#
+#     비상  =  화면 정지·끊김                      (인식 여부와 무관. 아래 참고)
+#           또는 (화질 이상  그리고  관절이 안 잡힘)
+#
+# 왜 이렇게 갈랐는가 — 화질 지표만으로는 "인식이 깨지는 지점"을 맞힐 수 없기 때문이다:
+#     · 라플라시안 분산은 렌즈가 아니라 **장면**을 잰다. 깨끗한 화면끼리도 장면만
+#       바뀌면 233 ~ 1282 로 5.5배 흔들렸다.
+#     · 흐림에 대한 붕괴가 너무 빠르다 — 눈으로 알기 어려운 k=3 흐림에서 이미 17.7%.
+#       "선명도 25% 에서도 수신호 인식은 멀쩡" 이라는 실사용 관측과 합치면, 임계값을
+#       어디에 두든 한쪽에서는 틀린다.
+#     · 실제 저조도에서는 두 축이 **거꾸로 올라간다**. 웹캠이 게인을 올려 노이즈를
+#       키우는데 라플라시안은 노이즈와 디테일을 구분하지 못한다(실측: 선명도 2457%).
+# 그래서 "인식이 깨졌나"는 지표로 추정하지 않고 관절 검출 결과로 직접 본다. 지표는
+# "그럴 만한 광학적 원인이 있나"만 답한다 — 사람이 그냥 자리를 비운 것을 고장으로
+# 오인하지 않기 위한 조건이다.
+#
+# 그래서 임계값은 "명백히 무너진 수준"으로 잡는다. 애매한 저하는 어차피 인식이 되면
+# 통과하므로 굳이 예민하게 잡을 이유가 없고, 사람이 없는 동안 오탐만 늘린다.
+#
+# 화면 정지만 예외인 이유: 프레임이 얼어붙으면 그 정지 화면 속 사람이 계속 검출되므로
+# 인식 게이트를 걸면 영영 안 잡힌다. 이건 광학이 아니라 장치 문제라 단독으로 올린다.
+LOW_LIGHT_P95 = 60              # 상위 5% 밝기(0~255)가 이 값 미만 = 저조도. 절대 기준
+GLARE_LEVEL = 250               # 이 밝기 이상을 포화(빛반사)로 본다
+GLARE_FRACTION = 0.15           # 화면의 이 비율 이상이 포화 = 빛반사
+NOISE_RATIO_DROP = 0.25         # 구조/선명도 비가 기준 대비 이 밑 = 노이즈 지배(저조도 게인)
+STRUCTURE_RATIO_DROP = 0.35     # 구조가 기준 대비 이 밑 = 가려짐·심한 흐림
+
+# 선명도만은 인식 게이트를 거치지 않고 **단독으로** 비상을 올린다(치명 축).
+# 실사용 관측 두 개가 그 경계를 좁혀 준다:
+#     선명도 25% — 수신호 인식이 멀쩡히 됐다.        → 여기서 뜨면 오탐
+#     선명도 21% — 이 정도부터는 잡히면 안 된다.      → 여기서는 떠야 함
+# 그 사이에 둔다. 게이트를 안 거치는 이유: 이 화질에서 MediaPipe 가 관절을 계속
+# 잡아내더라도 그 좌표를 믿을 수 없기 때문이다. "관절이 잡힌다 = 인식이 된다"는
+# 게이트의 전제가 여기서 깨지므로, 게이트에 맡기면 영영 안 뜬다.
+BLUR_RATIO_DROP = 0.22
+
+# 지표 평활 계수 — **나빠질 때는 빠르게, 좋아질 때는 천천히**.
+# 대칭 EMA(0.2)로 두면 암전 같은 급격한 열화에도 임계값까지 내려오는 데 7프레임이
+# 걸렸다(실측: 80%→64%→51%→41%→33%→26%→21%). 추론 주기 80ms 기준 0.56초다.
+# 비상 판정은 늦으면 의미가 없으므로 하강만 빠르게 따라가고, 복구 판정은 그대로
+# 느리게 둔다 — 순간적으로 화면이 돌아왔다고 비상을 성급히 푸는 쪽이 더 위험하다.
+QUALITY_EMA_FALL = 0.6          # 값이 나빠지는 방향으로 움직일 때
+QUALITY_EMA_RISE = 0.2          # 좋아지는 방향으로 움직일 때
+
+# ── 카메라 기울어짐/전복 판정 ────────────────────────────────────────────────────
+# 전복된 카메라는 화면이 선명하고 밝고 구조도 멀쩡해서 위 화질 축을 전부 통과한다.
+# 사람만 안 보이니 "신호수가 자리에 없다"와 구분이 안 된다. 그래서 축이 따로 필요하다.
+#
+# 재는 것: 강한 에지의 방향 히스토그램을 기준치와 맞춰 볼 때 몇 도 돌아가 있나.
+# **90도 주기로 접는 것이 핵심이다.** 사람이 만든 실내는 수직·수평이 지배적이라
+# (Manhattan world), 접지 않으면 "수직이 많은 장면 → 수평이 많은 장면"으로 바뀌기만 해도
+# 90도 회전으로 오판한다. 실측에서 창고 전경 기준으로 GUI 패널·차량 카메라 장면이
+# 90도로 나왔다. 접고 나면 둘 다 0도가 된다.
+#
+# 로봇 주행이 오탐을 만들지 않는 이유: 로봇이 도는 것(yaw)은 화면에서 좌우 이동(pan)이지
+# 회전(roll)이 아니다. 화면 회전은 카메라가 물리적으로 돌아갔을 때만 생긴다.
+# 실측 — 회전 0/5/10/15/20/30/40도를 5도 오차 없이 추정했고, 장면을 통째로 바꾸거나
+#        사람을 프레임 안에서 이동시킨 경우는 전부 0도였다.
+#
+# 한계: 정확히 90도·180도는 접힘 때문에 0도로 보인다. 옆으로 완전히 넘어가거나 뒤집힌
+# 카메라는 이 축으로 못 잡는다 — 그 경우는 사람이 안 잡히는 것으로 게이트가 열리기를
+# 기대하는 수밖에 없고, 그마저도 화질 축이 멀쩡하면 안 열린다(doc/work.md 남은 과제 참고).
+TILT_BINS = 18                  # 90도를 18칸 = 5도 해상도
+TILT_DEGREES = 15.0             # 기준치 대비 이 각도 이상 돌아가면 기울어짐
+TILT_FRAMES = 6                 # 그 상태가 이만큼 이어져야 확정 (주행 중 덜컹임 무시)
+
+# 게이트 경로(가려짐·노이즈)를 앞당기기 위한 연속 미검출 프레임 수.
+# pose_ratio 는 30프레임 창의 비율이라 사람이 사라진 뒤 임계값(0.3) 밑으로 내려가는 데
+# 21프레임(추론 80ms 기준 약 1.7초)이 걸린다. 비상 판정에는 너무 느리다. "방금 연속으로
+# 몇 장 못 잡았나"는 같은 사실을 훨씬 빨리 말해 주므로, 그쪽을 게이트에 함께 쓴다.
+# 6프레임 ≈ 0.5초 — 신호수가 잠깐 몸을 튼 정도로는 안 걸리고, 렌즈가 막히면 바로 걸린다.
+NO_POSE_FRAMES = 6
+
+# 화면 정지/끊김 판정 — 렌즈가 아니라 장치·드라이버 문제다.
+FREEZE_DIFF = 0.05              # 프레임 간 평균 절대차가 이 값 미만이면 "같은 그림"
+                                # (원본 해상도 기준. 살아 있는 웹캠은 정적인 장면에서도
+                                #  센서 노이즈로 이 값을 훨씬 넘는다)
+FREEZE_FRAMES = 15              # 그 상태가 이만큼 이어지면 정지로 판정 (20fps 기준 약 0.75초)
 class HandWarning:
     '''학습 데이터 수집 중 손이 프레임 밖으로 나가면 그 구간은 0으로 채워진 저품질 샘플이 되므로,
     수집자가 바로 알아챌 수 있도록 손 이탈, 렌즈 이상 시 화면에 빨간 깜빡임 경고 등 강한 시각 경고를 준다.
@@ -337,6 +424,43 @@ class HandWarning:
         
         cv2.putText(frame, "!! HAND OUT OF FRAME !!", (w // 2 - 260, h // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
+def _orientation_histogram(gray: np.ndarray) -> np.ndarray:
+    """강한 에지의 방향 분포(90도 주기). 카메라의 롤 각도를 재기 위한 대리 지표.
+
+    상위 10% 크기의 에지만 쓰는 이유: 약한 그래디언트는 노이즈와 텍스처라 방향이
+    고르게 퍼져 있어 히스토그램을 평평하게 만든다. 벽·기둥·선반처럼 뚜렷한 직선만
+    남겨야 중력 방향이 드러난다.
+    """
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+    ang = np.rad2deg(np.arctan2(gy, gx)) % 90.0
+    strong = mag > np.percentile(mag, 90)
+    hist, _ = np.histogram(ang[strong], bins=TILT_BINS, range=(0, 90),
+                           weights=mag[strong])
+    return hist / max(hist.sum(), 1e-9)
+
+
+def _tilt_degrees(baseline: np.ndarray, current: np.ndarray) -> float:
+    """두 방향 히스토그램을 원형 상호상관으로 맞춰 -45~+45도의 기울기를 낸다."""
+    scores = [float(np.dot(baseline, np.roll(current, k))) for k in range(TILT_BINS)]
+    deg = int(np.argmax(scores)) * (90.0 / TILT_BINS)
+    return deg if deg <= 45.0 else deg - 90.0
+
+
+def _track_down_fast(prev: float | None, new: float) -> float:
+    '''비대칭 EMA — 값이 떨어질 때는 빠르게, 오를 때는 천천히 따라간다.
+
+    선명도·구조는 낮을수록 나쁜 지표라 "떨어지는 방향"이 곧 고장 방향이다.
+    그쪽만 빠르게 반영해 비상 판정을 앞당기고, 회복 방향은 느리게 둬서 한두 프레임
+    좋아진 것으로 비상이 풀리지 않게 한다.
+    '''
+    if prev is None:
+        return new
+    alpha = QUALITY_EMA_FALL if new < prev else QUALITY_EMA_RISE
+    return alpha * new + (1 - alpha) * prev
+
+
 def _sharpness_score(gray: np.ndarray) -> float:
     '''그레이스케일 프레임의 선명도를 라플라시안(2차 미분) 분산으로 측정한다.
     라플라시안은 엣지(밝기가 급변하는 지점)에서 값이 크고, 평탄한 영역에서는 0에 가깝다.
@@ -345,25 +469,256 @@ def _sharpness_score(gray: np.ndarray) -> float:
     '''
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
+class FrameLivenessMonitor:
+    '''화면이 살아 있는지만 본다 — 렌즈가 아니라 장치·드라이버 쪽 고장.
+
+    왜 따로 두는가: 프레임이 얼어붙으면 그 정지 화면 속 사람이 계속 검출되므로,
+    "인식이 되고 있으니 정상"이라는 게이트를 통과해 버린다. 화질 지표도 멀쩡하다 —
+    마지막 정상 프레임이 그대로 반복되는 것이기 때문이다. 그래서 이 판정만은 인식
+    여부와 무관하게 단독으로 비상을 올린다.
+
+    카메라 케이블이 헐거워지거나 USB 대역이 모자랄 때 드라이버가 마지막 버퍼를 계속
+    돌려주는 일이 실제로 있다. 그때 로봇은 몇 초 전 수신호를 현재 명령으로 믿는다.
+    '''
+
+    def __init__(self) -> None:
+        self._prev = None
+        self._same_count = 0
+
+    def update(self, frame: np.ndarray) -> bool:
+        '''프레임 한 장을 받아 "정지 상태인가"를 돌려준다.
+
+        **원본 해상도로 비교한다.** 축소해서 비교하면 안 된다 — 살아 있는 화면임을
+        증명해 주는 것이 바로 화소 단위 센서 노이즈인데, 축소(영역 평균)가 그걸 지운다.
+        1/4로 줄여 재봤더니 깨끗한 실시간 화면조차 평균 절대차 0.45 로 내려앉아
+        정지로 오판했다.
+
+        완전 일치(==)가 아니라 아주 작은 임계값을 쓰는 이유: 드라이버가 같은 버퍼를
+        재전송할 때 JPEG 디코딩 경로에 따라 1비트씩 다를 수 있다. 반대로 임계값을
+        키우면 진짜 정적인 장면을 정지로 오인하므로 최소한만 둔다.
+        '''
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        if self._prev is None:
+            self._prev = gray
+            return False
+        diff = float(np.abs(gray - self._prev).mean())
+        self._prev = gray
+        self._same_count = self._same_count + 1 if diff < FREEZE_DIFF else 0
+        return self._same_count >= FREEZE_FRAMES
+
+
+def quality_status_text(lens: "LensHealthMonitor", frozen: bool) -> str:
+    """HUD 상태줄용 한 줄. 화질 이상이 있으면 그쪽을, 없으면 정지 여부를 말한다.
+
+    화질 이상을 먼저 보는 이유: "화면 정지"의 본래 모습은 **멀쩡해 보이는 화면이
+    안 바뀌는 것**이다. 화면이 새하얗게 날아가서(빛반사) 프레임 간 차이가 0이 된
+    경우까지 정지라고 부르면, 사람은 카메라 케이블을 확인하러 가게 된다 — 정작
+    해야 할 일은 조명을 가리는 것인데.
+    """
+    if lens.fault_reason is None and frozen:
+        return "화면 정지 — 프레임이 갱신되지 않음"
+    return lens.status_text
+
+
 class LensHealthMonitor:
-    '''카메라 프레임의 고주파 성분 추이 (렌즈 블러 현상 진단)
-    시작 후 BLUR_CALIBRAION_FRAMES 동안 관측된 값의 중앙값을 사용되는 카메라,조명의 정상 기준치로 잡는다. 
-    이후 EMA로 평활한 비율이 기준치 대비 크게 떨어지면 블러 상태로 판정한다.
+    '''렌즈로 세상이 제대로 보이고 있는지를 매 프레임 진단한다.
+
+    **이 클래스는 비상을 결정하지 않는다.** "화질에 이상이 있다"까지만 답하고, 그것을
+    비상으로 올릴지는 호출부가 관절 검출 결과와 함께 정한다(위 상수 주석 참고).
+    이유는 하나 — 화질 수치로 "인식이 깨지는 지점"을 맞히는 것이 불가능했기 때문이다.
+
+    측정하는 원시 값은 넷:
+        선명도  = 원본 프레임의 라플라시안 분산. 초점 흐림·해상도 저하에서 떨어진다.
+        구조    = 1/4로 줄인 뒤의 라플라시안 분산. 축소가 작은 것(물방울·먼지·노이즈)을
+                  평균으로 지우므로, **그 밑에 장면이 남아 있는지**가 드러난다.
+        밝기    = 상위 5% 화소의 밝기. 잘 노출된 화소가 있기는 한지.
+        포화    = 상위 밝기에 눌어붙은 화소의 비율. 빛반사가 여기서 잡힌다.
+
+    이걸로 다섯 가지를 각각 다른 물리적 근거로 본다:
+        해상도 변경 — 프레임 크기 자체가 바뀜. 정확하고 공짜인 검사라 제일 먼저 본다.
+        저조도     — 밝기가 절대 기준 미만. 장면과 무관하므로 절대값으로 본다.
+        빛반사     — 포화 화소 비율이 절대 기준 초과.
+        노이즈     — 구조/선명도 비 붕괴. 노이즈는 축소하면 사라지고 디테일은 남으므로,
+                     이 비가 무너지면 고주파의 정체가 디테일이 아니라 노이즈라는 뜻이다.
+                     저조도에서 웹캠이 게인을 올릴 때가 정확히 이 경우다.
+        가려짐/흐림 — 구조·선명도가 기준치 대비 붕괴.
+
+    선명도·구조·노이즈비는 시작 후 BLUR_CALIBRATION_FRAMES 동안의 중앙값을 그 카메라·
+    조명의 정상 기준치로 삼는다. 밝기·포화만 절대값이다 — 어둡거나 눌어붙은 건
+    기준치가 무엇이든 그런 것이기 때문이다.
+
+    한계 — 기준치는 반드시 렌즈가 깨끗하고 조명이 정상일 때 잡혀야 한다. 시작 순간
+    이미 나쁘면 그 상태가 "정상"으로 기록되어 이후 아무것도 감지하지 못한다. 그래서
+    보정이 끝나는 순간 기준치를 로그로 찍고, status_text 로 화면에도 계속 내보낸다 —
+    사람이 알아챌 수 있는 자리를 두 곳 만들어 둔 것이다.
     '''
     def __init__(self)->None:
-        self._baseline:float|None=None
+        self._baseline:float|None=None                  # 선명도 기준치
+        self._structure_baseline: float | None = None   # 구조 기준치
+        self._noise_baseline: float | None = None       # 구조/선명도 비 기준치
         self._samples : list[float] = []
+        self._structure_samples: list[float] = []
+        self._shape: tuple[int, int] | None = None      # 첫 프레임의 해상도
         self.ratio_ema : float | None = None
+        self.structure_ema: float | None = None
+        self.brightness: float | None = None            # 상위 5% 밝기(절대, 0~255)
+        self.glare: float | None = None                 # 포화 화소 비율(절대, 0~1)
+        self._orient_baseline: np.ndarray | None = None  # 정상 자세의 에지 방향 분포
+        self._orient_samples: list[np.ndarray] = []
+        self.tilt: float = 0.0                          # 기준 대비 회전각(도)
+        self._tilt_streak = 0                           # 임계 초과가 연속된 프레임 수
+        self.fault_reason: str | None = None            # 직전 update() 가 올린 이상의 종류
+        # 인식 게이트를 거치지 않고 단독으로 비상을 올려야 하는 이상인가.
+        # 관절이 잡히더라도 그 좌표를 믿을 수 없는 수준일 때만 True 다.
+        self.critical = False
+
+    @staticmethod
+    def _structure_score(gray: np.ndarray) -> float:
+        '''1/4로 줄인 뒤의 선명도 = 거친 스케일에 남아 있는 장면 구조의 양.
+
+        INTER_AREA 로 줄이는 것이 핵심이다 — 영역 평균이라 물방울·먼지·센서 노이즈처럼
+        작은 것이 주변에 섞여 사라진다. NEAREST 로 줄이면 그것들이 그대로 살아남아
+        이 축이 선명도와 같은 것을 재게 되고, 노이즈 판정도 같이 죽는다.
+        '''
+        small = cv2.resize(gray, None, fx=STRUCTURE_SCALE, fy=STRUCTURE_SCALE,
+                           interpolation=cv2.INTER_AREA)
+        return _sharpness_score(small)
+
+    @staticmethod
+    def _brightness_score(gray: np.ndarray) -> float:
+        '''상위 5% 화소의 밝기 = "이 프레임에 잘 노출된 부분이 있기는 한가".
+
+        평균이 아니라 상위 백분위인 이유: 어두운 배경에 사람만 조명을 받는 정상 상황을
+        저조도로 오판하지 않기 위해서다. 그런 화면은 평균은 낮아도 상위 5%는 높다.
+        '''
+        return float(np.percentile(gray, 95))
+
+    @property
+    def status_text(self) -> str:
+        '''HUD 상태줄에 붙일 한 줄 진단 — 네 축의 현재 값.
+
+        숫자를 화면에 내보내는 이유: 이상이 안 잡힐 때 판정기가 안 도는 건지,
+        기준치가 이상하게 잡힌 건지, 진짜로 아직 멀쩡한 건지를 로그 없이 가려야 한다.
+        640px 폭 상태줄에 앞의 안정화 상태와 함께 들어가야 해서 문구는 짧게 유지한다.
+        '''
+        if self.ratio_ema is None:
+            return "렌즈 --"
+        if self._baseline is None:
+            return f"렌즈 보정중 {len(self._samples)}/{BLUR_CALIBRATION_FRAMES}"
+        detail = (f"선명{self.ratio_ema / self._baseline * 100:.0f} "
+                  f"구조{self.structure_ema / self._structure_baseline * 100:.0f} "
+                  f"잡음{self._noise_ratio() / self._noise_baseline * 100:.0f} "
+                  f"밝기{self.brightness:.0f} 반사{self.glare * 100:.0f} "
+                  f"기울기{self.tilt:+.0f}")
+        if self.fault_reason is not None:
+            return f"화질 {self.fault_reason} — {detail}"
+        return f"화질 정상 ({detail})"
+
+    def _noise_ratio(self) -> float:
+        '''구조/선명도. 고주파의 정체가 디테일이면 크고, 노이즈면 작다.
+
+        노이즈는 화소끼리 상관이 없어 축소하면 평균으로 사라지지만, 진짜 디테일은
+        축소해도 남는다. 그래서 이 비가 무너졌다는 건 "고주파는 많은데 그게 장면이
+        아니다" = 센서 노이즈라는 뜻이다. 저조도에서 웹캠이 게인을 올릴 때 정확히
+        이렇게 된다 — 선명도는 되레 폭증하므로 선명도만 보면 절대 못 잡는다.
+        '''
+        return self.structure_ema / max(self.ratio_ema, 1e-6)
 
     def update(self,frame:np.ndarray) -> bool:
+        '''프레임 한 장을 보고 "화질에 이상이 있나"를 돌려준다. 비상 여부가 아니다.
+
+        원인은 fault_reason 에 남는다. 호출부는 이 반환값을 관절 검출 결과와 묶어서
+        비상 여부를 정한다 — 인식이 되고 있으면 화질이 좀 나빠도 통과시켜야 하기 때문.
+        '''
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         ratio = _sharpness_score(gray)
-        self.ratio_ema = ratio if self.ratio_ema is None else 0.2* ratio + 0.8 *self.ratio_ema
+        structure = self._structure_score(gray)
+        self.brightness = self._brightness_score(gray)
+        self.glare = float(np.mean(gray >= GLARE_LEVEL))
+        orient = _orientation_histogram(gray)
+        self.ratio_ema = _track_down_fast(self.ratio_ema, ratio)
+        self.structure_ema = _track_down_fast(self.structure_ema, structure)
+
+        # 해상도 변경은 지표가 아니라 사실이라 기준치도 EMA도 필요 없다. 카메라가 대역
+        # 부족 등으로 해상도를 재협상하면 여기서 바로 잡힌다.
+        if self._shape is None:
+            self._shape = gray.shape
+        elif gray.shape != self._shape:
+            self.fault_reason = f"해상도 변경 {self._shape[1]}x{self._shape[0]}→" \
+                                f"{gray.shape[1]}x{gray.shape[0]}"
+            self.critical = True    # 추정이 아니라 사실이라 게이트를 거칠 이유가 없다
+            return True
 
         if self._baseline is None:
             self._samples.append(self.ratio_ema)
+            self._structure_samples.append(self.structure_ema)
+            self._orient_samples.append(orient)
             if len(self._samples) >= BLUR_CALIBRATION_FRAMES:
                 self._baseline = float(np.median(self._samples))
-            return False 
+                self._structure_baseline = float(np.median(self._structure_samples))
+                self._noise_baseline = self._structure_baseline / max(self._baseline, 1e-6)
+                # 방향 분포는 중앙값이 아니라 평균으로 모은다 — 히스토그램 하나하나가
+                # 벡터라 "중간값"이 정의되지 않고, 평균이 곧 그 자세의 대표 분포다.
+                self._orient_baseline = np.mean(self._orient_samples, axis=0)
+                # 이 숫자들이 이후 모든 판정의 기준이다. 렌즈가 더럽거나 조명이 나쁜 채로
+                # 시작하면 여기 나쁜 값이 박히고 판정기는 영영 침묵하므로, 반드시 남긴다.
+                print(f"화질 기준치 확정: 선명도 {self._baseline:.0f}, "
+                      f"구조 {self._structure_baseline:.0f}, "
+                      f"잡음비 {self._noise_baseline:.2f}, 밝기 {self.brightness:.0f} "
+                      f"({BLUR_CALIBRATION_FRAMES}프레임 중앙값)")
+            self.fault_reason = None
+            self.critical = False
+            return False
 
-        return self.ratio_ema < self._baseline * BLUR_RATIO_DROP
+        # 기울기는 연속 프레임 수로 확정한다 — 주행 중 덜컹임 한두 장으로 세우지 않는다.
+        self.tilt = _tilt_degrees(self._orient_baseline, orient)
+        self._tilt_streak = self._tilt_streak + 1 if abs(self.tilt) >= TILT_DEGREES else 0
+
+        # 각 축을 "자기 임계값 대비" 얼마나 내려갔는지로 환산한다. 1.0 미만이면 그 축이
+        # 판정을 올린 것이다. 빛반사만 방향이 반대라(높을수록 나쁨) 역수로 맞춘다.
+        #
+        # 두 무리로 나눠 앞의 것을 먼저 보는 이유 — 여러 축은 거의 항상 같이 무너지는데
+        # 그중 하나가 **원인**이고 나머지는 **증상**이기 때문이다. 조명이 어두워지면
+        # 대비가 죽어 구조·선명도가 같이 떨어지는데(실측: 밝기 x0.15 에서 구조는 임계값의
+        # 6%까지 내려가 "가려짐"이 이겼다), 사람이 해야 할 일은 렌즈를 닦는 게 아니라
+        # 불을 켜는 것이다. 그래서 조명·노출 쪽을 먼저 보고, 거기가 멀쩡할 때만
+        # 광학 쪽(가려짐·흐림)을 원인으로 부른다.
+        causes = {
+            "저조도": self.brightness / LOW_LIGHT_P95,
+            "빛반사": GLARE_FRACTION / max(self.glare, 1e-6),
+            "노이즈": self._noise_ratio() / (self._noise_baseline * NOISE_RATIO_DROP),
+        }
+        # 기울어짐도 게이트 쪽이다: 카메라가 돌아갔어도 신호수가 그대로 인식되고 있다면
+        # 명령은 정상적으로 오간다. 진짜로 못 쓰게 돌아갔다면 사람이 안 잡혀 게이트가 열린다.
+        symptoms = {
+            "가려짐": self.structure_ema / (self._structure_baseline * STRUCTURE_RATIO_DROP),
+            f"기울어짐 {self.tilt:+.0f}도": (
+                1.0 if self._tilt_streak < TILT_FRAMES else 0.5),
+        }
+        # 게이트를 거치지 않고 단독으로 비상을 올리는 축들.
+        #   저조도·빛반사 — 절대 기준이라 프레임 하나로 확정된다. 평활도 게이트도
+        #       필요 없다: 화면이 캄캄하거나 새하얗게 날아갔으면 관절이 잡히든 말든
+        #       그 좌표를 믿을 수 없다. 게이트에 묶어 뒀더니 암전을 1프레임째에
+        #       알아보고도 pose_ratio(30프레임 창)를 기다리느라 21프레임 늦었다.
+        #   노이즈 — 조명만 끄면 웹캠이 게인을 올려 밝기를 유지하므로 위 저조도에
+        #       걸리지 않는다. 그 화면에서도 MediaPipe 는 관절을 계속 잡아내는데,
+        #       게이트에 묶어 뒀더니 비상이 안 뜨고 그 좌표로 stop 까지 확정했다.
+        #       구조/선명도 비가 무너지는 정상 장면은 없다 — 그 서명은 센서 노이즈뿐이다.
+        #   선명도 — 관절이 계속 잡혀도 못 믿는 수준(상수 주석 참고).
+        # 가려짐(구조)만 게이트에 남긴다: 로봇이 민무늬 벽에 바짝 붙어도 구조는
+        # 정상적으로 낮아지는데, 그때 사람이 잡히면 오탐을 낼 이유가 없다. 진짜로
+        # 가려졌다면 관절이 안 잡히므로 게이트가 곧바로 열린다.
+        self.critical = (self.brightness < LOW_LIGHT_P95
+                         or self.glare > GLARE_FRACTION
+                         or self._noise_ratio() < self._noise_baseline * NOISE_RATIO_DROP
+                         or self.ratio_ema < self._baseline * BLUR_RATIO_DROP)
+        for group in (causes, symptoms):
+            worst, margin = min(group.items(), key=lambda kv: kv[1])
+            if margin < 1.0:
+                self.fault_reason = worst
+                return True
+        if self.critical:
+            self.fault_reason = "흐림·해상도 저하"
+            return True
+        self.fault_reason = None
+        return False

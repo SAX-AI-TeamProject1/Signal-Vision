@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-08-06
 
 '''
 실시간 수신호 추론
@@ -6,7 +6,8 @@
 최근 30프레임 랜드마크를 슬라이딩 윈도우로 유지하며 매 프레임 분류하고,
 안정화 필터(신회도 임계값 + 연속 k회 동일 예측)을 통과한 신호만 확정.
 
-확정 신호가 없다면 '인식 불가' - 안전 기본 값 정지
+확정 신호가 없다면 '인식 대기중' - 명령 없음(안전 기본값 정지). 이건 고장이 아니라
+"아직 신호가 없다"는 정상 상태다 — 고장으로 취급하는 유일한 경우는 렌즈 이상(EMERGENCY).
 
 종료 q 또는 ESC
 
@@ -22,22 +23,32 @@ import torch # 모델 로드·추론 (LSTM 분류기)
 
 # 랜드마크 검출·프레임 처리는 여기서 재구현하지 않고 core 모듈(extractor.py)에서 그대로
 # 가져다 쓴다 — collect.py·landmark_viewer.py와 동일한 헬퍼를 공유한다.
-from signal_vision.vision_hand.capture.extractor import (
+from src.capture.extractor import (
     HAND_DIM,
     FeatureExtractor,
     HandWarning,
+    FrameLivenessMonitor,
     LensHealthMonitor,
+    NO_POSE_FRAMES,
     choose_camera_index,
+    quality_status_text,
     draw_detections,
     open_camera,
     process_frame,
 )
-from signal_vision.vision_hand.inference.ui import Hud # 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
-from signal_vision.vision_hand.inference.publish import make_publisher
-from signal_vision.vision_hand.training.train import SignLSTM
+# Hud: 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
+# NO_SIGNAL_TEXT/header_for: 표시 상태 3종(emergency/confirmed/waiting)의 문구·색 규칙
+from src.inference.ui import Hud, NO_SIGNAL_TEXT, header_for
+from src.inference.publish import make_publisher
+from src.training.train import SignLSTM
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_PATH = ROOT / "models" / "sign_classifier.pt"  # train.py가 저장하는 학습된 LSTM 가중치
+
+# 모델이 낼 수 있지만 대응하는 명령이 없는 라벨 — 확정돼도 로봇은 그대로 서 있다.
+# 그래서 화면에서는 "확정: idle"(초록)이 아니라 대기 상태로 보여야 한다. 확정 신호가
+# 아예 없는 것과 idle 이 확정된 것은 로봇 입장에서 같은 일이기 때문이다.
+IDLE_LABELS = ("idle",)
 
 
 def load_model(model_path: Path, device):
@@ -71,7 +82,7 @@ class SignalStabilizer:
 
     "확정 상태"(confirmed/confirmed_idx)와 그걸 바꾸는 규칙 — 연속 N회 일치해야 확정,
     낮은 confidence는 유예를 두고 해제하되(분진 등 일시적 하락에 기계가 서지 않게)
-    렌즈 블러가 실측으로 겹치면 유예 없이 즉시 해제 — 을 한 곳에 모아, main() 루프는
+    렌즈 이상이 실측되면 유예 없이 즉시 해제 — 을 한 곳에 모아, main() 루프는
     매 프레임 update()/mark_person_absent() 호출만 하면 되게 한다.
     '''
 
@@ -81,9 +92,9 @@ class SignalStabilizer:
         self.ema = ema
         self.release_grace = release_grace
 
-        self.confirmed = "인식 불가"  # 화면/퍼블리시에 쓰는 현재 확정 신호 (라벨 문자열 또는 안전 기본값)
+        self.confirmed = NO_SIGNAL_TEXT  # 화면/퍼블리시에 쓰는 현재 확정 신호 (라벨 문자열 또는 안전 기본값)
         self.confirmed_idx: int | None = None  # confirmed에 대응하는 라벨 인덱스 (None = 확정 없음)
-        self.emergency = False  # 렌즈 블러가 실측된 상태 = 즉시정지+정비알림 (블러 해제/정상 신호 재확정 시 해제)
+        self.emergency = False  # 렌즈 이상이 실측된 상태 = 즉시정지+정비알림 (렌즈 정상 복귀 시 해제)
         self.status = "버퍼 채우는 중..."
         self.probs: np.ndarray | None = None  # 확률 EMA 상태 (HUD 패널·퍼블리시 confidence에 재사용)
         self.top: int | None = None  # 현재 1위 클래스 인덱스
@@ -92,42 +103,59 @@ class SignalStabilizer:
         self._streak = 0  # streak_label이 연속으로 몇 번째 유지되고 있는지 (--consecutive와 비교)
         self._low_conf_since: float | None = None  # 확정 해제 유예(히스테리시스) 타이머 시작 시각
 
+    @property
+    def display_state(self) -> str:
+        '''화면이 보여야 할 상태 하나 — "emergency" | "confirmed" | "waiting".
+
+        판정 순서가 곧 정책이다: 렌즈 이상이면 인식 결과와 무관하게 비상이 이기고,
+        그 다음이 "명령이 있는 라벨이 확정됐나", 나머지는 전부 대기다. 대기는 고장이
+        아니다 — 사람이 신호를 안 주는 동안 로봇이 서 있는 것도 여기에 들어간다.
+        '''
+        if self.emergency:
+            return "emergency"
+        if self.confirmed_idx is None or self.confirmed in IDLE_LABELS:
+            return "waiting"
+        return "confirmed"
+
     def _reset_to_unknown(self, reason: str) -> None:
         '''확정 신호를 안전 기본값(정지)으로 되돌린다. emergency 는 여기서 건드리지
-        않는다 — emergency 는 오직 렌즈 블러 실측 여부(is_blurred)로만 결정되므로
+        않는다 — emergency 는 오직 렌즈 이상 실측 여부(lens_fault)로만 결정되므로
         호출부에서 따로 세팅한다.'''
         self._streak_label, self._streak = None, 0
         self._low_conf_since = None
-        if self.confirmed != "인식 불가":
-            self.confirmed = "인식 불가"
+        if self.confirmed != NO_SIGNAL_TEXT:
+            self.confirmed = NO_SIGNAL_TEXT
             self.confirmed_idx = None
-            print(f"확정: 인식 불가 ({reason}) → 안전 기본값(정지)")
+            print(f"{NO_SIGNAL_TEXT} ({reason}) → 명령 없음(정지)")
 
-    def mark_person_absent(self, is_blurred: bool) -> None:
+    def mark_person_absent(self, lens_fault: bool) -> None:
         '''윈도우 대부분에서 사람(포즈)이 안 잡힐 때 — 유예 없이 즉시 해제.
 
-        렌즈 블러가 실측되면(is_blurred) 사람 미감지 여부와 무관하게 EMERGENCY 로
-        올린다 — 블러 단독으로도 즉시정지+정비알림을 띄우는 정책. 화면이 선명한데
-        사람만 없는 건(관절 미검출 포함) 정상 운용이라 emergency 가 아니다.
+        렌즈 이상이 실측되면(lens_fault) 사람 미감지 여부와 무관하게 EMERGENCY 로
+        올린다 — 원인이 초점 흐림이든 가려짐이든 "렌즈로 세상을 못 보고 있다"는
+        사실은 같으므로, 그 한 가지만으로 즉시정지+정비알림을 띄운다. 화면이 멀쩡한데
+        사람만 없는 건(관절 미검출 포함) 정상 운용이라 emergency 가 아니다 —
+        그건 "인식 대기중"이다. 인식 실패를 고장으로 올리면 신호수가 잠깐 자리를
+        비운 것까지 정비 알림이 되어, 진짜 렌즈 이상이 그 소음에 묻힌다.
         '''
         self.probs, self.top = None, None
-        self._reset_to_unknown("렌즈 블러 [즉시]" if is_blurred else "사람 미감지")
-        self.emergency = is_blurred
-        self.status = "렌즈 블러 — 정비 필요" if is_blurred else "사람 미감지"
+        self._reset_to_unknown("렌즈 이상 [즉시]" if lens_fault else "사람 미감지")
+        self.emergency = lens_fault
+        self.status = "정비 필요" if lens_fault else "사람 미감지"
 
-    def update(self, raw_probs: np.ndarray, labels: list[str], is_blurred: bool) -> None:
+    def update(self, raw_probs: np.ndarray, labels: list[str], lens_fault: bool) -> None:
         '''실제 예측 확률 하나로 안정화 필터를 한 스텝 진행한다.
 
-        렌즈 블러가 실측되면(is_blurred) 인식 결과와 무관하게 최우선으로
-        즉시정지+EMERGENCY 로 처리하고 나머지 안정화 로직은 건너뛴다 — 블러 단독
-        트리거 정책. 화면이 선명해지면(is_blurred=False) 아래 정상 경로로 흘러
+        렌즈 이상이 실측되면(lens_fault) 인식 결과와 무관하게 최우선으로
+        즉시정지+EMERGENCY 로 처리하고 나머지 안정화 로직은 건너뛴다 — 렌즈 단독
+        트리거 정책. 렌즈가 정상으로 돌아오면(lens_fault=False) 아래 정상 경로로 흘러
         emergency 가 자동으로 해제된다.
         '''
-        if is_blurred:
+        if lens_fault:
             self.probs, self.top = None, None
-            self._reset_to_unknown("렌즈 블러 [즉시]")
+            self._reset_to_unknown("렌즈 이상 [즉시]")
             self.emergency = True
-            self.status = "렌즈 블러 — 정비 필요"
+            self.status = "정비 필요"
             return
 
         # 여기부터는 화면이 선명한 정상 경로 — emergency 는 항상 해제 상태로 둔다.
@@ -151,7 +179,7 @@ class SignalStabilizer:
             # 해제는 유예를 두고 (히스테리시스) — 일시적 하락에 기계가 서지 않게.
             self._streak_label, self._streak = None, 0
             now = time.monotonic()
-            if self.confirmed != "인식 불가":
+            if self.confirmed != NO_SIGNAL_TEXT:
                 if self._low_conf_since is None:
                     self._low_conf_since = now
                 remain = self.release_grace - (now - self._low_conf_since)
@@ -164,9 +192,9 @@ class SignalStabilizer:
 def main() -> None:
     '''웹캠 → 특징 추출 → 슬라이딩 윈도우 추론 → 안정화 필터 → 퍼블리시 메인 루프.
 
-    프레임마다 (1) 사람이 안 잡히면 즉시 "인식 불가"로 안전 기본값 처리,
+    프레임마다 (1) 사람이 안 잡히면 즉시 "인식 대기중"으로 안전 기본값 처리,
     (2) 모델 확률을 EMA로 평활한 뒤 임계값+연속 일치를 만족해야만 신호를 확정,
-    (3) 렌즈 블러(김서림 등)가 실측으로 확인되면서 인식까지 흔들리면 유예 없이 즉시 해제,
+    (3) 렌즈 이상(초점 흐림·김서림·가려짐)이 실측되면 인식 결과와 무관하게 즉시 EMERGENCY,
     (4) 확정 상태가 바뀌면 즉시 + 아니면 1초 하트비트로 계속 퍼블리시한다.
 
     상태 관리(확정/streak/유예/emergency)는 SignalStabilizer가 전담하고, 이 루프는
@@ -211,8 +239,10 @@ def main() -> None:
     last_sent: tuple[str, float] = ("", 0.0)  # (마지막 전송 신호, 전송 시각) — 하트비트 주기 판단용
 
     window: deque[np.ndarray] = deque(maxlen=num_frames)  # 최근 num_frames개 특징 벡터 (슬라이딩 윈도우)
+    no_pose = 0  # 연속으로 포즈를 못 잡은 프레임 수 (창 비율보다 훨씬 빠른 신호)
     warning = HandWarning()  # 손이 연속으로 안 잡히면 화면에 이탈 경고
-    lens_monitor = LensHealthMonitor()  # 렌즈 블러(김서림·물방울·분진) 진단
+    lens_monitor = LensHealthMonitor()  # 화질 이상(흐림·해상도·빛반사·저조도·가려짐) 진단
+    liveness = FrameLivenessMonitor()   # 화면 정지/끊김 진단 (렌즈가 아니라 장치 쪽)
     stabilizer = SignalStabilizer(args.threshold, args.consecutive, args.ema, args.release_grace)
 
     while True:
@@ -222,21 +252,25 @@ def main() -> None:
             break
         # draw_detections보다 반드시 먼저 측정한다 — 스켈레톤 선/경고 오버레이가 그려진
         # 뒤에 재면 그 인공적인 고대비 선 때문에 선명도가 실측보다 크게 부풀려져(실측
-        # 평균 +157%, 최대 +197%) 실제 렌즈 블러(김서림 등)를 못 잡을 수 있다.
-        is_blurred = lens_monitor.update(frame)
+        # 평균 +157%, 최대 +197%) 실제 렌즈 이상(김서림 등)을 못 잡을 수 있다.
+        poor_quality = lens_monitor.update(frame)
+        frozen = liveness.update(frame)
         draw_detections(frame, hand_result, pose_result)
         warning.update(hand_result)
         warning.draw(frame)
 
         window.append(FeatureExtractor.vector(hand_result, pose_result))
+        no_pose = 0 if pose_result.pose_landmarks else no_pose + 1
 
         if len(window) == num_frames:
             arr = np.stack(window)
 
             # 안전 가드: 윈도우 대부분에서 사람(포즈)이 안 잡히면 모델 판단을 신뢰하지 않는다
             pose_ratio = float((arr[:, HAND_DIM * 2 :] != 0).any(axis=1).mean())
-            if pose_ratio < 0.3:
-                stabilizer.mark_person_absent(is_blurred)
+            if pose_ratio < 0.3 or (poor_quality and no_pose >= NO_POSE_FRAMES):
+                # 사람이 안 잡힌다. 화질이 무너져 있으면 그게 원인이므로 비상,
+                # 화질이 멀쩡하면 그냥 신호수가 자리에 없는 것이므로 대기다.
+                stabilizer.mark_person_absent(frozen or poor_quality)
             else:
                 # --- 실제 예측 한 번 ---
                 # arr: (num_frames=30, 150) — PyTorch 모델은 항상 "배치 축"을 기대하므로
@@ -253,7 +287,10 @@ def main() -> None:
                     # .cpu().numpy(): GPU에 있었을 수도 있는 텐서를 CPU로 내리고 (numpy는 GPU 메모리를 다룰 줄 모름)
                     # numpy 배열로 바꾼 후 (EMA 평활, argmax 등)는 순수 numpy로 다룬다.
                     raw_probs = torch.softmax(model(x), dim=1)[0].cpu().numpy()
-                stabilizer.update(raw_probs, labels, is_blurred)
+                # 관절이 잡히고 있다 = 대체로 인식은 되고 있다. 적당한 흐림이나 해상도
+                # 저하로 로봇을 세우지는 않는다. 다만 화면 정지와 치명적 선명도 저하는
+                # "관절이 잡힌다"는 신호 자체를 믿을 수 없는 경우라 그대로 올린다.
+                stabilizer.update(raw_probs, labels, frozen or lens_monitor.critical)
 
         # 확정 상태 전송: 상태가 바뀌면 즉시, 같으면 1초 주기 하트비트
         signal = labels[stabilizer.confirmed_idx] if stabilizer.confirmed_idx is not None else "unknown"
@@ -264,9 +301,12 @@ def main() -> None:
             publisher.publish(signal, conf_out)
             last_sent = (signal, now)
 
-        header_color = (0, 220, 0) if stabilizer.confirmed_idx is not None else (80, 80, 255)
+        header, header_color = header_for(stabilizer.display_state, stabilizer.confirmed)
+        # 렌즈 진단 수치를 상태줄에 항상 붙인다 — EMERGENCY가 안 뜰 때 "판정기가 죽은 건지
+        # 기준치 대비 아직 멀쩡한 건지"를 화면만 보고 가릴 수 있어야 하기 때문.
+        status = f"{stabilizer.status}  |  {quality_status_text(lens_monitor, frozen)}"
         if hud.render(frame, labels, stabilizer.probs, stabilizer.top, stabilizer.confirmed_idx, args.threshold,
-                      header=f"확정: {stabilizer.confirmed}", header_color=header_color, status=stabilizer.status,
+                      header=header, header_color=header_color, status=status,
                       emergency=stabilizer.emergency):
             break
 

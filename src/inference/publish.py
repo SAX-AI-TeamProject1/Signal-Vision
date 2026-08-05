@@ -1,4 +1,4 @@
-# Last updated: 2026-07-27
+# Last updated: 2026-08-06
 '''
 publish.py
 분류 결과 외부 전달 인터페이스.
@@ -14,7 +14,7 @@ publish.py
 
 메시지 형식 (JSON, ROS에서는 std_msgs/String.data 안에 담김):
     {"signal": "stop", "confidence": 0.93, "timestamp": 1783300000.0}
-    signal은 모델 라벨 그대로, 인식 불가 상태는 "unknown" (기계 쪽 안전 기본값 = 정지).
+    signal은 모델 라벨 그대로, 인식 대기중 상태는 "unknown" (기계 쪽 안전 기본값 = 정지).
 '''
 
 import json # 메시지(signal/confidence/timestamp)를 문자열로 직렬화
