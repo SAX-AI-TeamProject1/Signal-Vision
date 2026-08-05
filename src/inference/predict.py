@@ -22,7 +22,7 @@ import torch # 모델 로드·추론 (LSTM 분류기)
 
 # 랜드마크 검출·프레임 처리는 여기서 재구현하지 않고 core 모듈(extractor.py)에서 그대로
 # 가져다 쓴다 — collect.py·landmark_viewer.py와 동일한 헬퍼를 공유한다.
-from src.capture.extractor import (
+from signal_vision.vision_hand.capture.extractor import (
     HAND_DIM,
     FeatureExtractor,
     HandWarning,
@@ -32,9 +32,9 @@ from src.capture.extractor import (
     open_camera,
     process_frame,
 )
-from src.inference.ui import Hud # 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
-from src.inference.publish import make_publisher
-from src.training.train import SignLSTM
+from signal_vision.vision_hand.inference.ui import Hud # 확률 패널·한글 오버레이·창 표시 전담 (predict.py는 예측 로직만)
+from signal_vision.vision_hand.inference.publish import make_publisher
+from signal_vision.vision_hand.training.train import SignLSTM
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_PATH = ROOT / "models" / "sign_classifier.pt"  # train.py가 저장하는 학습된 LSTM 가중치
@@ -83,7 +83,7 @@ class SignalStabilizer:
 
         self.confirmed = "인식 불가"  # 화면/퍼블리시에 쓰는 현재 확정 신호 (라벨 문자열 또는 안전 기본값)
         self.confirmed_idx: int | None = None  # confirmed에 대응하는 라벨 인덱스 (None = 확정 없음)
-        self.emergency = False  # 블러+인식저하가 겹쳐 즉시정지된 상태 (정상 신호 재확정 시 해제)
+        self.emergency = False  # 렌즈 블러가 실측된 상태 = 즉시정지+정비알림 (블러 해제/정상 신호 재확정 시 해제)
         self.status = "버퍼 채우는 중..."
         self.probs: np.ndarray | None = None  # 확률 EMA 상태 (HUD 패널·퍼블리시 confidence에 재사용)
         self.top: int | None = None  # 현재 1위 클래스 인덱스
@@ -92,27 +92,46 @@ class SignalStabilizer:
         self._streak = 0  # streak_label이 연속으로 몇 번째 유지되고 있는지 (--consecutive와 비교)
         self._low_conf_since: float | None = None  # 확정 해제 유예(히스테리시스) 타이머 시작 시각
 
-    def _reset_to_unknown(self, reason: str, emergency: bool) -> None:
+    def _reset_to_unknown(self, reason: str) -> None:
+        '''확정 신호를 안전 기본값(정지)으로 되돌린다. emergency 는 여기서 건드리지
+        않는다 — emergency 는 오직 렌즈 블러 실측 여부(is_blurred)로만 결정되므로
+        호출부에서 따로 세팅한다.'''
         self._streak_label, self._streak = None, 0
         self._low_conf_since = None
         if self.confirmed != "인식 불가":
             self.confirmed = "인식 불가"
             self.confirmed_idx = None
             print(f"확정: 인식 불가 ({reason}) → 안전 기본값(정지)")
-        self.emergency = emergency
 
     def mark_person_absent(self, is_blurred: bool) -> None:
         '''윈도우 대부분에서 사람(포즈)이 안 잡힐 때 — 유예 없이 즉시 해제.
 
-        is_blurred가 True면 "사람이 없는 게 아니라 렌즈가 막혀서 아예 안 보이는"
-        경우일 수 있으므로 EMERGENCY로 표시한다(원인 구분은 정비 알림 목적).
+        렌즈 블러가 실측되면(is_blurred) 사람 미감지 여부와 무관하게 EMERGENCY 로
+        올린다 — 블러 단독으로도 즉시정지+정비알림을 띄우는 정책. 화면이 선명한데
+        사람만 없는 건(관절 미검출 포함) 정상 운용이라 emergency 가 아니다.
         '''
         self.probs, self.top = None, None
-        self._reset_to_unknown("사람 미감지", emergency=is_blurred)
-        self.status = "사람 미감지"
+        self._reset_to_unknown("렌즈 블러 [즉시]" if is_blurred else "사람 미감지")
+        self.emergency = is_blurred
+        self.status = "렌즈 블러 — 정비 필요" if is_blurred else "사람 미감지"
 
     def update(self, raw_probs: np.ndarray, labels: list[str], is_blurred: bool) -> None:
-        '''실제 예측 확률 하나로 안정화 필터를 한 스텝 진행한다.'''
+        '''실제 예측 확률 하나로 안정화 필터를 한 스텝 진행한다.
+
+        렌즈 블러가 실측되면(is_blurred) 인식 결과와 무관하게 최우선으로
+        즉시정지+EMERGENCY 로 처리하고 나머지 안정화 로직은 건너뛴다 — 블러 단독
+        트리거 정책. 화면이 선명해지면(is_blurred=False) 아래 정상 경로로 흘러
+        emergency 가 자동으로 해제된다.
+        '''
+        if is_blurred:
+            self.probs, self.top = None, None
+            self._reset_to_unknown("렌즈 블러 [즉시]")
+            self.emergency = True
+            self.status = "렌즈 블러 — 정비 필요"
+            return
+
+        # 여기부터는 화면이 선명한 정상 경로 — emergency 는 항상 해제 상태로 둔다.
+        self.emergency = False
         self.probs = raw_probs if self.probs is None else \
             self.ema * raw_probs + (1 - self.ema) * self.probs
         self.top = int(self.probs.argmax())
@@ -127,24 +146,19 @@ class SignalStabilizer:
             if self._streak >= self.consecutive and self.confirmed != labels[self.top]:
                 self.confirmed = labels[self.top]
                 self.confirmed_idx = self.top
-                self.emergency = False
                 print(f"확정: {self.confirmed}  (신뢰도 {conf:.2f})")
         else:
             # 해제는 유예를 두고 (히스테리시스) — 일시적 하락에 기계가 서지 않게.
-            # 단, 렌즈 블러가 실측으로 확인된 상태에서 인식까지 흔들리면 유예 없이 즉시 해제.
             self._streak_label, self._streak = None, 0
             now = time.monotonic()
             if self.confirmed != "인식 불가":
-                if is_blurred:
-                    self._reset_to_unknown("렌즈 블러 + 인식 저하 [즉시]", emergency=True)
+                if self._low_conf_since is None:
+                    self._low_conf_since = now
+                remain = self.release_grace - (now - self._low_conf_since)
+                if remain > 0:
+                    self.status = f"신뢰 회복 대기 {remain:.1f}s (유지: {self.confirmed})"
                 else:
-                    if self._low_conf_since is None:
-                        self._low_conf_since = now
-                    remain = self.release_grace - (now - self._low_conf_since)
-                    if remain > 0:
-                        self.status = f"신뢰 회복 대기 {remain:.1f}s (유지: {self.confirmed})"
-                    else:
-                        self._reset_to_unknown("유예 초과", emergency=False)
+                    self._reset_to_unknown("유예 초과")
 
 
 def main() -> None:
